@@ -937,7 +937,7 @@ function workoutSheet(w, isNew) {
   draft._isNew = isNew;
   const days = currentPlan().days;
   openSheet(isNew ? 'トレーニングを記録' : '記録を編集', `
-    <div class="grid2">
+    <div>
       <label class="field">日付<input type="date" id="w-date" value="${w.date}"></label>
       ${isNew ? `<label class="field">メニュー<select data-in="workoutDay">${days.map((d, i) => `<option value="${i}" ${d.name === w.dayName ? 'selected' : ''}>${h(d.name)}</option>`).join('')}</select></label>` : `<label class="field">メニュー<input value="${h(w.dayName)}" disabled></label>`}
     </div>
@@ -1146,7 +1146,7 @@ const ACT = {
     const chosen = SLOTS.filter(([k]) => draft.photos[k]);
     if (!chosen.length) { alert('写真を1枚以上選んでください'); return; }
     const imgs = chosen.map(([k]) => draft.photos[k]);
-    const r = await runAI('AIが体を分析中…（少し時間がかかります）', () => gemini(analyzePrompt(chosen.map(c => c[1])), imgs));
+    const r = await runAI('AIが体を分析中…\n（少し時間がかかります）', () => gemini(analyzePrompt(chosen.map(c => c[1])), imgs));
     if (!r) return;
     const photos = await Promise.all(imgs.map(i => resizeImage(i, 400, 0.7)));
     const a = { id: uid(), date: ymd(), photos, result: r };
@@ -1172,7 +1172,7 @@ const ACT = {
 
   // ---- トレーニング ----
   async planAI() {
-    const r = await runAI('AIがメニューを作成中…（少し時間がかかります）', () => gemini(planPrompt()));
+    const r = await runAI('AIがメニューを作成中…\n（少し時間がかかります）', () => gemini(planPrompt()));
     if (!r?.days?.length) return;
     S.plan = {
       source: 'ai', createdAt: ymd(),
@@ -1209,7 +1209,7 @@ const ACT = {
     try { imgs = await filesToImages(files, 1600, 24, 30); }
     catch (e) { alert(e.message || '画像を読み込めませんでした'); return; }
     finally { busy(false); }
-    const r = await runAI('AIがトレーニング記録を読み取り中…（少し時間がかかります）', () => gemini(kmemoPrompt(imgs.length), imgs));
+    const r = await runAI('AIがトレーニング記録を読み取り中…\n（少し時間がかかります）', () => gemini(kmemoPrompt(imgs.length), imgs));
     if (!r) return;
     const sessions = (r.sessions || []).map(x => ({
       date: /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : null,
