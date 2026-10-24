@@ -567,7 +567,7 @@ const VIEWS = {
     <button class="btn block" data-act="bodyManual" style="margin-bottom:12px">✏️ 数値を手で入力</button>`;
     if (g) html += `<div class="card"><h3>腹筋が見えるまでの目安</h3>${absGuideHtml(g)}</div>`;
     if (list.length >= 2) {
-      const last = list.slice(-30);
+      const last = list.slice(-60);
       html += `<div class="card"><h3>体重の変化</h3>${lineChart(last.filter(b => num(b.weight) != null).map(b => ({ d: b.date, y: num(b.weight) })), 'kg', 'var(--accent)')}
         <h3 style="margin-top:12px">体脂肪率の変化</h3>
         <div class="legend"><span><i style="background:var(--accent)"></i>InBody</span><span><i style="background:var(--chart2)"></i>タニタ</span></div>
@@ -787,6 +787,52 @@ function bodyReadPrompt(src, count) {
 {"date":"測定日 YYYY-MM-DD（写っていなければ null）","weight":体重kg,"fatPct":体脂肪率%,"skeletalMuscle":骨格筋量kg,"muscle":筋肉量kg,"fatMass":体脂肪量kg,"bmr":基礎代謝kcal,"visceral":内臓脂肪レベル,"water":体水分量kg,"score":InBody点数,"extra":{"その他読み取れた項目名（部位別筋肉量、推定骨量、体内年齢、BMIなど）":"値と単位"},"note":"読み取りで気になった点があれば1文"}`;
 }
 
+// ===================== InBodyアプリのCSV取り込み =====================
+// 列名（単位の手前まで）→ アプリの項目
+const INBODY_COLS = {
+  '体重': 'weight', '骨格筋量': 'skeletalMuscle', '筋肉量': 'muscle', '体脂肪量': 'fatMass', '体脂肪率': 'fatPct',
+  '基礎代謝量': 'bmr', 'InBody点数': 'score', '内臓脂肪レベル': 'visceral', '体水分量': 'water',
+};
+function parseCsv(text) {
+  const rows = [];
+  let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += c;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim()));
+}
+function parseInbodyCsv(text) {
+  const [head, ...rows] = parseCsv(text.replace(/^\uFEFF/, ''));
+  const names = head.map(x => x.trim());
+  const dateCol = names.indexOf('日付');
+  if (dateCol < 0 || !names.some(n => n.startsWith('体重'))) return null;
+  return rows.map(r => {
+    const stamp = (r[dateCol] || '').trim();
+    const m = stamp.match(/^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?/);
+    if (!m) return null;
+    const b = { id: 'inbody-' + stamp, source: 'inbody', date: `${m[1]}-${m[2]}-${m[3]}`, extra: {},
+      created: new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0)).getTime() };
+    names.forEach((n, i) => {
+      const v = (r[i] || '').trim();
+      if (i === dateCol || n === '測定機器' || !v || v === '-') return;
+      const key = INBODY_COLS[n.replace(/\s*\(.*$/, '')];
+      if (key) b[key] = num(v); else b.extra[n] = v;
+    });
+    return b.weight != null ? b : null;
+  }).filter(Boolean);
+}
+
 // ===================== 体の写真分析 =====================
 const SLOTS = [['front', '正面'], ['side', '横'], ['back', '後ろ']];
 function analyzeSheet() {
@@ -982,7 +1028,10 @@ const ACT = {
         <p class="muted">⏺が見つからないときは、iPhoneの「設定」→「コントロールセンター」で「画面収録」を追加してください。</p>
         <h4>スクリーンショットでもOK</h4>
         <p class="small">何枚かあっても、まとめて選べます。1枚目の画面（体重・骨格筋量・体脂肪率）だけでも記録できます。</p>
-        <button class="btn primary block" data-act="bodyReadFiles" data-src="inbody">動画・スクショを選ぶ</button>`);
+        <button class="btn primary block" data-act="bodyReadFiles" data-src="inbody">動画・スクショを選ぶ</button>
+        <h4>過去の記録をまとめて取り込む</h4>
+        <p class="small">InBodyアプリから書き出したCSVファイルを選ぶと、全部の記録をまとめて取り込みます（AIは使いません）。前に取り込んだ記録は重複しません。</p>
+        <button class="btn block" data-act="inbodyCsv">📄 CSVファイルを選ぶ</button>`);
       return;
     }
     ACT.bodyReadFiles(el);
@@ -1007,6 +1056,22 @@ const ACT = {
     <button class="btn primary block" data-act="bodyReadPhoto" data-src="tanita">📷 画面を撮って読み取る</button>
     <button class="btn block" data-act="bodyReadPhoto" data-src="inbody" style="margin-top:8px">📱 InBodyを取り込む</button>
     <button class="btn block" data-act="bodyManual" style="margin-top:8px">✏️ 手で入力</button>`),
+  async inbodyCsv() {
+    const [file] = await pickPhotos(false, '.csv,text/csv,text/comma-separated-values');
+    if (!file) return;
+    const list = parseInbodyCsv(await file.text());
+    if (!list) { alert('InBodyのCSVとして読み取れませんでした。InBodyアプリから書き出したファイルを選んでください。'); return; }
+    const have = new Set(S.body.map(b => b.id));
+    const fresh = list.filter(b => !have.has(b.id));
+    if (!fresh.length) { alert(`${list.length}件の記録がありましたが、すべて取り込み済みです。`); return; }
+    const dates = fresh.map(b => b.date).sort();
+    if (!confirm(`${list.length}件の記録が見つかりました。\nそのうち新しい ${fresh.length}件（${jpDate(dates[0])}〜${jpDate(dates.at(-1))}）を取り込みますか？`)) return;
+    S.body.push(...fresh);
+    await save('body');
+    closeSheet();
+    toast(`${fresh.length}件取り込みました`);
+    render();
+  },
   bodyManual: () => bodySheet({ id: uid(), source: 'tanita', date: ymd(), extra: {} }, true),
   bodyEdit: el => bodySheet(S.body.find(b => b.id === el.dataset.id), false),
   async bodySave() {
