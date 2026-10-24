@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bodymake</title>
+<meta name="description" content="写真で食事を記録し、InBody・体の写真からトレーニングメニューを作る体づくりアプリ">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="bodymake">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+  <h1>bodymake</h1>
+  <span id="header-sub"></span>
+</header>
+
+<main id="view"></main>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="home"><span>🏠</span>ホーム</button>
+  <button data-tab="meals"><span>🍚</span>食事</button>
+  <button data-tab="body"><span>📏</span>体</button>
+  <button data-tab="train"><span>🏋️</span>トレーニング</button>
+  <button data-tab="settings"><span>⚙️</span>設定</button>
+</nav>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-panel">
+    <div class="sheet-head">
+      <h2 id="sheet-title"></h2>
+      <button class="icon-btn" data-act="closeSheet" aria-label="閉じる">✕</button>
+    </div>
+    <div id="sheet-body"></div>
+  </div>
+</div>
+
+<div id="busy" class="busy" hidden>
+  <div class="spinner"></div>
+  <p id="busy-msg">AIが分析中…</p>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

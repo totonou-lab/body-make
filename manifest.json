@@ -1,0 +1,15 @@
+{
+  "name": "bodymake",
+  "short_name": "bodymake",
+  "description": "写真で食事を記録し、InBody・体の写真からトレーニングメニューを作る体づくりアプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f5",
+  "theme_color": "#0f766e",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
