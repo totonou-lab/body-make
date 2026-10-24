@@ -106,6 +106,7 @@ const num = v => {
   const n = parseFloat(String(v).replace(/[^\d.\-]/g, ''));
   return Number.isFinite(n) ? n : null;
 };
+const firstNum = v => { const m = String(v ?? '').match(/\d+(?:\.\d+)?/); return m ? parseFloat(m[0]) : null; };
 const r0 = n => (n == null ? '–' : Math.round(n));
 const r1 = n => (n == null ? '–' : Math.round(n * 10) / 10);
 const sum = (arr, k) => arr.reduce((a, x) => a + (num(x[k]) || 0), 0);
@@ -206,13 +207,13 @@ async function videoFrames(file, maxFrames = 16, max = 1600) {
   }
 }
 // 写真・スクショ・画面収録をまとめてAIに送れる画像に変える
-async function filesToImages(files, max = 1600) {
+async function filesToImages(files, max = 1600, maxFrames = 16, cap = 20) {
   const out = [];
   for (const f of files) {
-    if (f.type.startsWith('video/')) out.push(...await videoFrames(f, 16, max));
+    if (f.type.startsWith('video/')) out.push(...await videoFrames(f, maxFrames, max));
     else out.push(await fileToJpeg(f, max));
   }
-  return out.slice(0, 20);
+  return out.slice(0, cap);
 }
 
 // ===================== AI（Google Gemini） =====================
@@ -455,8 +456,24 @@ function overloadHint(e, last) {
   if (!top) return '';
   return last.sets.every(s => num(s.r) >= top) ? `前回は全セット${top}回できました → 今日は少し重くしてみましょう（+2.5kgほど）` : '';
 }
+// 推定の最大重量（1回だけ挙げられる重さ）: 重さ×(1+回数/30)
+const e1rm = s => (num(s.w) > 0 && num(s.r) > 0 ? num(s.w) * (1 + num(s.r) / 30) : 0);
+function strengthText() {
+  const map = new Map();
+  for (const w of sortedWorkouts()) {
+    for (const e of w.exercises) {
+      const m = map.get(e.name) || { n: 0, best: 0 };
+      m.n++;
+      m.best = Math.max(m.best, ...e.sets.map(e1rm));
+      m.last = { date: w.date, sets: e.sets };
+      map.set(e.name, m);
+    }
+  }
+  if (!map.size) return 'まだ記録なし';
+  return [...map].map(([name, m]) => `${name}: 最近 ${m.last.date} ${setsText(m.last.sets)} / 推定最大 ${m.best ? r1(m.best) + 'kg' : '-'} / 記録${m.n}回`).join('\n');
+}
 function recentWorkoutsText() {
-  const ws = sortedWorkouts().slice(-8);
+  const ws = sortedWorkouts().slice(-12);
   if (!ws.length) return 'まだ記録なし';
   return ws.map(w => `${w.date} ${w.dayName}: ` + w.exercises.map(e => `${e.name} ${setsText(e.sets)}`).join(' / ')).join('\n');
 }
@@ -596,10 +613,14 @@ const VIEWS = {
     const plan = currentPlan();
     const ws = sortedWorkouts().reverse();
     let html = `<button class="btn primary block" data-act="startWorkout" style="margin-bottom:12px">🏋️ 今日のトレーニングを記録</button>`;
+    html += `<div class="card"><h3>筋トレメモから取り込む</h3>
+      <p class="small">筋トレメモの記録画面を画面収録（またはスクショ）すると、AIが種目・重さ・回数を読み取ります。今の実力をもとに、AIが重さまで提案できるようになります。</p>
+      <button class="btn block" data-act="kmemoGuide">📱 筋トレメモの記録を取り込む</button></div>`;
     html += `<div class="card"><div class="spread"><h3>今のメニュー</h3><span class="muted">${plan.source === 'ai' ? `AI作成 ${h(plan.createdAt)}` : '基本メニュー'}</span></div>
       ${plan.days.map(d => `<h4>${h(d.name)}</h4><p class="muted" style="margin:0 0 4px">${h(d.focus || '')}</p>
         ${d.exercises.map(e => `<div class="ex"><div class="ex-name">${h(e.name)}</div>
           <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span><span class="muted">休憩 ${h(e.rest || '-')}${e.weight ? ` ・ 目安 ${h(e.weight)}` : ''}</span></div>
+          ${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}
           ${e.note ? `<div class="muted">${h(e.note)}</div>` : ''}</div>`).join('')}`).join('')}
       ${plan.tips?.length ? `<h4>アドバイス</h4><ul class="plain small">${plan.tips.map(t => `<li>${h(t)}</li>`).join('')}</ul>` : ''}
       <div class="grid2" style="margin-top:10px">
@@ -876,7 +897,12 @@ function planPrompt() {
   const st = S.settings;
   return `あなたは経験豊富なパーソナルトレーナーです。次の利用者のために、週${st.daysPerWeek}回・1回60〜75分のジムのトレーニングメニュー（${st.daysPerWeek}日分のローテーション）を作ってください。
 アマチュアでも安全にできる種目を中心に、目標に直結する種目を優先し、腹筋の目標がある場合は毎回お腹の種目を入れてください。種目名は日本のジムで一般的な呼び方にしてください。
-これまでの記録があれば、それをもとに今の重さの目安（weight）を書いてください。記録が無い種目は空文字にしてください。
+【重さの提案（重要）】
+- すべての種目に、今日使う重さの目安（weight）を必ず書いてください。
+- 記録がある種目は「種目ごとの実力」の最近の重さ×回数と推定最大重量から、指定の回数をフォームを崩さずできる重さにしてください（目標の回数ぎりぎりで2回ほど余力が残る程度）。
+- 記録が無い種目は、近い種目の記録から推定し「◯kg前後（初回は軽めで確認）」のように書いてください。自重種目は「自重」と書いてください。
+- 記録に同じ種目がある場合は、記録と同じ種目名を使ってください（記録とメニューをつなげるため）。
+- progression には「何回できたら何kg上げるか」を書いてください。
 【利用者の情報】
 ${profileText()}
 【なりたい体・目標】
@@ -884,10 +910,25 @@ ${goalsText()}
 【使える器具】${equipmentText()}
 【体の写真の分析】
 ${latestAnalysisText()}
+【種目ごとの実力（重さの単位はkg）】
+${strengthText()}
 【最近のトレーニング記録】
 ${recentWorkoutsText()}
 次の形のJSONだけを返してください:
-{"days":[{"name":"A 胸・肩・腹 のような短い名前","focus":"この日の狙い（1文）","exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"目安の重さ（例: 40kg）または空文字","note":"フォームのコツを短く"}]}],"tips":["全体のアドバイス（2〜4個）"]}`;
+{"days":[{"name":"A 胸・肩・腹 のような短い名前","focus":"この日の狙い（1文）","exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"今日の重さの目安（例: 40kg）","progression":"重さを上げる条件（例: 3セットとも12回できたら42.5kg）","note":"フォームのコツを短く"}]}],"tips":["全体のアドバイス（2〜4個）"]}`;
+}
+
+function kmemoPrompt(count) {
+  return `これはiPhoneの筋トレ記録アプリ「筋トレメモ」の画面の画像です（${count}枚。スクロールしながら撮ったもので、同じ内容が重なって写っていることがあります）。
+写っているトレーニング記録を、日付ごとにまとめて読み取ってください。
+- 重なって写っている同じ記録は1回にまとめる
+- 読めない値は null。推測で数字を作らない
+- 年が書かれていない日付は、今日（${ymd()}）以前で一番近い日付として解釈する。日付がまったく分からない場合は null
+- 重さの単位が lb の場合は kg に換算する。自重の種目は w を 0 にする
+- 1セットごとに重さ(w)と回数(r)を分けて入れる（「40kg × 10回 × 3セット」なら同じセットを3つ）
+- 種目名は画面の表記のまま
+次の形のJSONだけを返してください:
+{"sessions":[{"date":"YYYY-MM-DD または null","exercises":[{"name":"種目名","sets":[{"w":40,"r":10}]}]}],"note":"読み取りで気になった点があれば1文"}`;
 }
 
 // ===================== トレーニング記録のシート =====================
@@ -912,8 +953,8 @@ function workoutFromPlanDay(day, date = ymd()) {
     exercises: day.exercises.map(e => {
       const last = lastPerf(e.name);
       const n = num(e.sets) || 3;
-      const sets = Array.from({ length: n }, (_, i) => ({ w: last ? (last.sets[i] || last.sets.at(-1)).w : num(e.weight), r: null }));
-      return { name: e.name, reps: e.reps, target: `${n}×${e.reps}`, sets };
+      const sets = Array.from({ length: n }, (_, i) => ({ w: last ? (last.sets[i] || last.sets.at(-1)).w : firstNum(e.weight), r: null }));
+      return { name: e.name, reps: e.reps, weight: e.weight || '', target: `${n}×${e.reps}`, sets };
     }),
   };
 }
@@ -923,7 +964,7 @@ function renderWorkoutList() {
     const hint = overloadHint(e, last);
     return `<div class="ex">
       <div class="spread"><div class="ex-name">${h(e.name)}</div><button class="icon-btn" data-act="workoutDelEx" data-e="${ei}" aria-label="種目を削除">✕</button></div>
-      <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets))}` : '前回の記録なし'}</span></div>
+      <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}${e.weight ? ` ・ ${h(e.weight)}` : ''}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets))}` : '前回の記録なし'}</span></div>
       ${hint ? `<div class="hint small">${h(hint)}</div>` : ''}
       <table class="sets"><tr><th>セット</th><th>重さ kg</th><th>回数</th><th></th></tr>
         ${e.sets.map((s, si) => `<tr><td>${si + 1}</td>
@@ -1135,7 +1176,7 @@ const ACT = {
     if (!r?.days?.length) return;
     S.plan = {
       source: 'ai', createdAt: ymd(),
-      days: r.days.map(d => ({ name: String(d.name), focus: d.focus || '', exercises: (d.exercises || []).map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', note: e.note || '' })) })),
+      days: r.days.map(d => ({ name: String(d.name), focus: d.focus || '', exercises: (d.exercises || []).map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', progression: e.progression || '', note: e.note || '' })) })),
       tips: r.tips || [],
     };
     await save('plan');
@@ -1149,6 +1190,58 @@ const ACT = {
     S.plan = null;
     await save('plan');
     render();
+  },
+  kmemoGuide: () => openSheet('筋トレメモから取り込む', `
+    <ol class="small">
+      <li>筋トレメモで、記録が日付ごとに並んでいる画面（種目・重さ・回数が見える画面）を開く</li>
+      <li>コントロールセンターから⏺（画面収録）を押す</li>
+      <li>録画が始まったら、<b>ゆっくり</b>スクロール（直近1〜2か月分くらいで十分です）。詳しい画面を開く必要がある場合は、開いて少し止まってから次へ</li>
+      <li>画面上の赤い部分をタップして止める</li>
+      <li>下のボタンで、その動画を選ぶ</li>
+    </ol>
+    <p class="muted">スクリーンショットを何枚か選んでもOKです。読み取った内容は、保存する前に確認できます。</p>
+    <button class="btn primary block" data-act="kmemoPick">動画・スクショを選ぶ</button>`),
+  async kmemoPick() {
+    const files = await pickPhotos(true, 'image/*,video/*');
+    if (!files.length) return;
+    let imgs;
+    busy(true, '画像を準備中…');
+    try { imgs = await filesToImages(files, 1600, 24, 30); }
+    catch (e) { alert(e.message || '画像を読み込めませんでした'); return; }
+    finally { busy(false); }
+    const r = await runAI('AIがトレーニング記録を読み取り中…（少し時間がかかります）', () => gemini(kmemoPrompt(imgs.length), imgs));
+    if (!r) return;
+    const sessions = (r.sessions || []).map(x => ({
+      date: /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : null,
+      exercises: (x.exercises || []).map(e => ({
+        name: String(e.name || '').trim(),
+        sets: (e.sets || []).map(t => ({ w: num(t.w) ?? 0, r: num(t.r) })).filter(t => t.r != null),
+      })).filter(e => e.name && e.sets.length),
+    })).filter(x => x.exercises.length);
+    if (!sessions.length) { alert('トレーニング記録を読み取れませんでした。種目・重さ・回数が見える画面で、もう一度試してください。'); return; }
+    const sig = w => w.date + '|' + w.exercises.map(e => e.name).sort().join(',');
+    const have = new Set(S.workouts.map(sig));
+    draft = {
+      fresh: sessions.map(x => ({ id: uid(), date: x.date || ymd(), dayName: x.date ? '筋トレメモから' : '筋トレメモから（日付不明）', source: 'kmemo', exercises: x.exercises }))
+        .filter(w => !have.has(sig(w))),
+    };
+    if (!draft.fresh.length) { alert('読み取った記録は、すべて取り込み済みでした。'); return; }
+    draft.fresh.sort((a, b) => a.date.localeCompare(b.date));
+    openSheet('読み取った記録', `
+      ${r.note ? `<div class="hint small">AIのメモ: ${h(r.note)}</div>` : ''}
+      <p class="small">${draft.fresh.length}回分の記録を読み取りました。内容を確認してください（間違いはあとで記録一覧から直せます）。</p>
+      ${draft.fresh.map(w => `<div class="ex"><div class="ex-name">${jpDate(w.date)}${w.dayName.includes('不明') ? ' <span class="tag">日付不明</span>' : ''}</div>
+        ${w.exercises.map(e => `<div class="small">${h(e.name)}：<span class="muted">${h(setsText(e.sets))}</span></div>`).join('')}</div>`).join('')}
+      <button class="btn primary block" data-act="kmemoSave" style="margin-top:12px">取り込む</button>
+      <button class="btn block" data-act="closeSheet" style="margin-top:8px">やめる</button>`);
+  },
+  async kmemoSave() {
+    const n = draft.fresh.length;
+    S.workouts.push(...draft.fresh.map((w, i) => ({ ...w, created: Date.now() + i })));
+    await save('workouts');
+    closeSheet();
+    render();
+    if (confirm(`${n}回分を取り込みました。\nこの記録をもとに、AIで重さ入りのメニューを作りますか？`)) ACT.planAI();
   },
   startWorkout: () => workoutSheet(workoutFromPlanDay(nextPlanDay()), true),
   workoutEdit: el => workoutSheet(S.workouts.find(w => w.id === el.dataset.id), false),
