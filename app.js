@@ -65,6 +65,7 @@ const DEFAULT_SETTINGS = {
   equipment: ['free', 'machine', 'cable', 'smith'],
   unit: 'kg',
   override: { kcal: '', protein: '' },
+  target: null, // { weight, fatPct, skeletalMuscle, reason, steps, source, date, startWeight, startFat }
   bike: 'normal',
   shortcutName: 'bodymake用にコピー',
   routes: [],
@@ -440,14 +441,57 @@ function absGuide() {
   const sex = S.settings.profile.sex;
   const b = latestWith('fatPct');
   if (!sex || !b || !num(b.weight)) return null;
-  const goalPct = sex === 'male' ? 11 : 18;
+  const custom = num(S.settings.target?.fatPct);
+  const goalPct = custom || (sex === 'male' ? 11 : 18);
   const w = num(b.weight), pct = num(b.fatPct);
   const lean = w * (1 - pct / 100);
+  // 筋肉の量はそのままで、脂肪だけ落としたときの体重
   const goalW = lean / (1 - goalPct / 100);
   const toLose = Math.max(0, w - goalW);
   const weeks = Math.max(1, daysUntil(targetDate()) / 7);
   const perWeek = toLose / weeks;
-  return { goalPct, pct, toLose, perWeek, weeks, safe: perWeek <= w * 0.007, source: b.source };
+  return { goalPct, pct, w, goalW, toLose, perWeek, weeks, safe: perWeek <= w * 0.007, source: b.source, custom: !!custom };
+}
+
+// 目標の数値: 自分で決めた（またはAIの提案を採用した）値 → 無ければ計算の目安
+function targetValues() {
+  const t = S.settings.target;
+  if (t && (num(t.weight) || num(t.fatPct))) return { ...t, weight: num(t.weight), fatPct: num(t.fatPct), skeletalMuscle: num(t.skeletalMuscle) };
+  const g = absGuide();
+  return g ? { weight: Math.round(g.goalW * 10) / 10, fatPct: g.goalPct, source: 'calc' } : null;
+}
+function targetHtml() {
+  const tv = targetValues();
+  if (!tv) return '<p class="muted">性別と体脂肪率が入ると、目標の体重・体脂肪率を出せます。</p>';
+  const nowW = num(latestWith('weight')?.weight), nowF = num(latestWith('fatPct')?.fatPct);
+  const diff = (now, goal, u) => (now != null && goal != null ? `<span class="${goal - now < 0 ? 'down' : 'up'}">${goal - now < 0 ? '−' : '+'}${r1(Math.abs(goal - now))}${u}</span>` : '');
+  // 進み具合: 目標を決めたときの値から、どれだけ近づいたか
+  const st = S.settings.target;
+  const prog = (start, now, goal) => (start != null && now != null && goal != null && start !== goal ? Math.max(0, Math.min(100, ((start - now) / (start - goal)) * 100)) : null);
+  const pw = prog(num(st?.startWeight), nowW, tv.weight), pf = prog(num(st?.startFat), nowF, tv.fatPct);
+  return `<div class="target-box">
+    <div class="grid2">
+      <div class="stat"><span>目標の体重</span><b>${tv.weight != null ? r1(tv.weight) + '<small>kg</small>' : '-'}</b><span>今 ${r1(nowW)}kg ${diff(nowW, tv.weight, 'kg')}</span></div>
+      <div class="stat"><span>目標の体脂肪率</span><b>${tv.fatPct != null ? r1(tv.fatPct) + '<small>%</small>' : '-'}</b><span>今 ${r1(nowF)}% ${diff(nowF, tv.fatPct, '%')}</span></div>
+    </div>
+    ${tv.skeletalMuscle ? `<p class="small" style="text-align:center;margin:6px 0 0">骨格筋量の目標 <b>${r1(tv.skeletalMuscle)}kg</b>（今 ${r1(num(latestWith('skeletalMuscle')?.skeletalMuscle))}kg）</p>` : ''}
+    ${pf != null ? `<div class="bar"><div class="bar-top"><span>体脂肪率の進み具合</span><span>${r0(pf)}%</span></div><div class="bar-track"><div class="bar-fill" style="width:${pf}%"></div></div></div>` : ''}
+    ${pw != null && pf == null ? `<div class="bar"><div class="bar-top"><span>体重の進み具合</span><span>${r0(pw)}%</span></div><div class="bar-track"><div class="bar-fill" style="width:${pw}%"></div></div></div>` : ''}
+    <p class="muted" style="margin:6px 0 0">${tv.source === 'ai' ? `🤖 AIの提案（${jpDate(tv.date)}）` : tv.source === 'manual' ? '自分で決めた目標' : '計算の目安（筋肉の量はそのままで、腹筋が見える体脂肪率まで落とした場合）'}</p>
+  </div>`;
+}
+function targetPrompt() {
+  return `あなたは経験豊富なパーソナルトレーナー兼管理栄養士です。利用者の「なりたい体」の言葉と体のデータから、期限までの現実的な数値目標を提案してください。
+【利用者の情報】
+${profileText()}
+【なりたい体・目標】
+${goalsText()}
+【週のトレーニング】週${S.settings.daysPerWeek}回
+- 体脂肪率は、測った機械（InBody／タニタ）の値を基準にしてください。
+- 筋肉を増やす目標がある場合は、骨格筋量の増加も見込んで目標体重を決めてください（体脂肪を落としながら筋肉を増やすペースは、一般の人で月0.2〜0.5kg程度）。
+- 体重の減らし方は週に体重の0.5〜0.7%以内の、無理のないペースにしてください。期限までに難しい場合は正直にそう書き、届く範囲の目標にしてください。
+次の形のJSONだけを返してください:
+{"weight":目標体重kg,"fatPct":目標体脂肪率%,"skeletalMuscle":目標骨格筋量kgまたはnull,"weeklyPace":"週あたりのペース（例: 週0.3kg）","reason":"そう考えた理由（2〜3文）","steps":["途中の目安（例: 1か月後 71.5kg・13%）"]}`;
 }
 
 function profileText() {
@@ -470,6 +514,11 @@ function profileText() {
   return lines.join('\n');
 }
 function goalsText() {
+  const tv = S.settings.target;
+  if (tv && (num(tv.weight) || num(tv.fatPct))) return goalsTextBase() + `\n数値の目標: 体重${tv.weight ?? '-'}kg・体脂肪率${tv.fatPct ?? '-'}%${tv.skeletalMuscle ? `・骨格筋量${tv.skeletalMuscle}kg` : ''}`;
+  return goalsTextBase();
+}
+function goalsTextBase() {
   const st = S.settings;
   return `${st.goals.map(g => '- ' + g).join('\n')}\n期限: ${targetDate()}（あと${daysUntil(targetDate())}日）\n今の方針: ${MODES.find(m => m[0] === st.mode)?.[1]}`;
 }
@@ -1043,7 +1092,9 @@ const VIEWS = {
     // 目標
     html += `<div class="card"><h3>🎯 目標</h3><ul class="plain small">${st.goals.map(x => `<li>${h(x)}</li>`).join('')}</ul>
       <p class="muted">期限：${ymdText(targetDate())}（あと${daysUntil(targetDate())}日）</p>
-      ${g ? absGuideHtml(g) : ''}</div>`;
+      ${targetHtml()}
+      ${g ? absGuideHtml(g) : ''}
+      <button class="btn sm" data-act="go" data-tab="settings" style="margin-top:6px">目標の数値を決める・AIに相談</button></div>`;
     return html;
   },
 
@@ -1216,6 +1267,15 @@ const VIEWS = {
       </div>
       <p class="muted">→ ${sessionText()}。AIのメニューも基本メニューも、この時間に収まるように組みます。自転車の移動はここに含めなくて大丈夫です。</p>
       <p class="muted">目標を達成したら、ここを書き換えればそのまま使い続けられます（例: 方針を「増量」にして胸をさらに大きく）。</p>
+      <h4>目標の数値</h4>
+      ${targetHtml()}
+      ${st.target?.reason ? `<div class="hint small">💬 ${h(st.target.reason)}${st.target.weeklyPace ? `<br>ペース：${h(st.target.weeklyPace)}` : ''}${st.target.steps?.length ? `<ul class="plain">${st.target.steps.map(x => `<li>${h(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
+      <button class="btn primary block" data-act="targetAI" style="margin-top:8px">🤖 目標の言葉からAIに提案してもらう</button>
+      <div class="grid2">
+        <label class="field">目標の体重（kg）<input type="number" inputmode="decimal" data-target="weight" value="${h(st.target?.weight ?? '')}" placeholder="${h(targetValues()?.weight ?? '')}"></label>
+        <label class="field">目標の体脂肪率（%）<input type="number" inputmode="decimal" data-target="fatPct" value="${h(st.target?.fatPct ?? '')}" placeholder="${h(targetValues()?.fatPct ?? '')}"></label>
+      </div>
+      <p class="muted">空欄なら計算の目安を使います。自分で入れた数字が優先されます。</p>
     </div>
 
     <div class="card"><h3>1日の目標（自動計算）</h3>
@@ -1271,8 +1331,10 @@ function bar(label, val, target, unit) {
 }
 
 function absGuideHtml(g) {
-  if (g.toLose <= 0.1) return `<div class="hint">体脂肪率 ${r1(g.pct)}% で、腹筋が見えてくる目安（${g.goalPct}%前後）に届いています！ 腹筋種目で凹凸をはっきりさせましょう。</div>`;
-  return `<div class="hint">腹筋が見えてくる目安は体脂肪率 <b>${g.goalPct}%前後</b>。今は ${r1(g.pct)}%（${SOURCES[g.source] || ''}）なので、あと<b>約${r1(g.toLose)}kg</b>の脂肪を落とすイメージです。<br>
+  const label = g.custom ? '目標の体脂肪率' : '腹筋が見えてくる目安の体脂肪率';
+  if (g.toLose <= 0.1) return `<div class="hint">体脂肪率 ${r1(g.pct)}% で、${label}（${g.goalPct}%）に届いています！ 腹筋種目で凹凸をはっきりさせましょう。</div>`;
+  return `<div class="hint">${label}は <b>${g.goalPct}%</b>。今は ${r1(g.pct)}%（${SOURCES[g.source] || ''}）なので、あと<b>約${r1(g.toLose)}kg</b>の脂肪を落とすイメージです。<br>
+    ${g.custom ? '' : `体重でいうと <b>${r1(g.w)}kg → 約${r1(g.goalW)}kg</b>（筋肉の量はそのままの場合）。<br>`}
     期限までだと<b>週${r1(g.perWeek)}kg</b>ペース。${g.safe ? '無理のないペースです。' : '少し急なペースです。期限までに全部は難しくても、近づけば腹筋の上の方から見えてきます。焦って食事を減らしすぎないように。'}</div>`;
 }
 
@@ -2398,6 +2460,30 @@ const ACT = {
   },
 
   // ---- 設定 ----
+  async targetAI() {
+    const r = await runAI('AIが目標の数値を考えています…', sig => gemini(targetPrompt(), [], sig), 'plan');
+    if (!r || (!num(r.weight) && !num(r.fatPct))) return;
+    draft = { proposal: r };
+    openSheet('AIからの目標の提案', `
+      <div class="grid2" style="text-align:center">
+        <div class="stat"><span>目標の体重</span><b>${r1(num(r.weight))}<small>kg</small></b></div>
+        <div class="stat"><span>目標の体脂肪率</span><b>${r1(num(r.fatPct))}<small>%</small></b></div>
+      </div>
+      ${num(r.skeletalMuscle) ? `<p class="small" style="text-align:center">骨格筋量の目標 <b>${r1(num(r.skeletalMuscle))}kg</b></p>` : ''}
+      ${r.weeklyPace ? `<p class="small">📈 ペース：${h(r.weeklyPace)}</p>` : ''}
+      <div class="hint small">💬 ${h(r.reason || '')}</div>
+      ${r.steps?.length ? `<h4>途中の目安</h4><ul class="plain small">${r.steps.map(x => `<li>${h(x)}</li>`).join('')}</ul>` : ''}
+      <button class="btn primary block" data-act="targetAccept">この目標にする</button>`);
+  },
+  async targetAccept() {
+    const r = draft.proposal;
+    S.settings.target = { weight: num(r.weight), fatPct: num(r.fatPct), skeletalMuscle: num(r.skeletalMuscle), reason: r.reason || '', weeklyPace: r.weeklyPace || '', steps: r.steps || [], source: 'ai', date: ymd(),
+      startWeight: num(latestWith('weight')?.weight), startFat: num(latestWith('fatPct')?.fatPct) };
+    await save('settings');
+    closeSheet();
+    render();
+    toast('目標の数値を保存しました');
+  },
   async targetRestart() {
     S.settings.targetBase = ymd();
     await save('settings');
@@ -2482,6 +2568,16 @@ const INPUT = {
 
 async function onSettingChange(el) {
   const st = S.settings;
+  if (el.dataset.target) {
+    const t = st.target || {};
+    t[el.dataset.target] = num(el.value);
+    if (!num(t.weight) && !num(t.fatPct)) st.target = null;
+    else st.target = { ...t, source: 'manual', reason: '', steps: [], date: ymd(), startWeight: t.startWeight ?? num(latestWith('weight')?.weight), startFat: t.startFat ?? num(latestWith('fatPct')?.fatPct) };
+    await save('settings');
+    const y = window.scrollY; render(); window.scrollTo(0, y);
+    toast('保存しました');
+    return;
+  }
   if (el.dataset.eq) {
     const k = el.dataset.eq;
     st.equipment = el.checked ? [...new Set([...st.equipment, k])] : st.equipment.filter(x => x !== k);
@@ -2534,7 +2630,7 @@ document.addEventListener('change', e => {
   syncDateBox(e);
   const el = e.target;
   if (el.matches('select[data-in], input[type=checkbox][data-in]') && INPUT[el.dataset.in]) INPUT[el.dataset.in](el, e);
-  if (el.matches('[data-set], [data-eq]')) onSettingChange(el);
+  if (el.matches('[data-set], [data-eq], [data-target]')) onSettingChange(el);
 });
 
 (async () => {
