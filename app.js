@@ -35,7 +35,7 @@ function sessionText() {
 }
 const BIKES = [['normal', '普通の自転車（ママチャリ・クロスバイク）'], ['assist', '電動アシスト自転車'], ['road', 'ロードバイク']];
 
-const SOURCES = { inbody: 'InBody', tanita: 'タニタ', manual: '手入力', health: 'ヘルスケア' };
+const SOURCES = { inbody: 'InBody', tanita: '家庭の体重計', manual: '手入力', health: 'ヘルスケア' };
 
 const MODES = [
   ['cut', '引き締め（脂肪を落とす）'],
@@ -487,7 +487,7 @@ ${profileText()}
 【なりたい体・目標】
 ${goalsText()}
 【週のトレーニング】週${S.settings.daysPerWeek}回
-- 体脂肪率は、測った機械（InBody／タニタ）の値を基準にしてください。
+- 体脂肪率は、測った機械（InBody／家庭の体重計）の値を基準にしてください。
 - 筋肉を増やす目標がある場合は、骨格筋量の増加も見込んで目標体重を決めてください（体脂肪を落としながら筋肉を増やすペースは、一般の人で月0.2〜0.5kg程度）。
 - 体重の減らし方は週に体重の0.5〜0.7%以内の、無理のないペースにしてください。期限までに難しい場合は正直にそう書き、届く範囲の目標にしてください。
 次の形のJSONだけを返してください:
@@ -1144,7 +1144,7 @@ const VIEWS = {
     const g = absGuide();
     let html = `<div class="btn-grid">
       <button class="btn primary" data-act="bodyReadPhoto" data-src="inbody">📱 InBodyを取り込む</button>
-      <button class="btn" data-act="bodyReadPhoto" data-src="tanita">📷 タニタの画面を読む</button>
+      <button class="btn" data-act="bodyReadPhoto" data-src="tanita">📷 家庭の体重計を読む</button>
     </div>
     <button class="btn block" data-act="bodyManual" style="margin-bottom:12px">✏️ 数値を手で入力</button>`;
     if (g) html += `<div class="card"><h3>腹筋が見えるまでの目安</h3>${absGuideHtml(g)}</div>`;
@@ -1152,10 +1152,10 @@ const VIEWS = {
       const last = list.slice(-60);
       html += `<div class="card"><h3>体重の変化</h3>${lineChart(last.filter(b => num(b.weight) != null).map(b => ({ d: b.date, y: num(b.weight), id: b.id })), 'kg', 'var(--accent)')}
         <h3 style="margin-top:12px">体脂肪率の変化</h3>
-        <div class="legend"><span><i style="background:var(--accent)"></i>InBody</span><span><i style="background:var(--chart2)"></i>タニタ</span></div>
+        <div class="legend"><span><i style="background:var(--accent)"></i>InBody</span><span><i style="background:var(--chart2)"></i>家庭の体重計</span></div>
         ${lineChart(last.filter(b => num(b.fatPct) != null && b.source === 'inbody').map(b => ({ d: b.date, y: num(b.fatPct), id: b.id })), '%', 'var(--accent)',
           last.filter(b => num(b.fatPct) != null && b.source !== 'inbody').map(b => ({ d: b.date, y: num(b.fatPct), id: b.id })))}
-        <p class="muted">InBodyとタニタは測り方が違うので、体脂肪率は同じ機械どうしで比べてください。</p></div>`;
+        <p class="muted">InBodyと家庭の体重計は測り方が違うので、体脂肪率は同じ機械どうしで比べてください。</p></div>`;
     }
     html += `<div class="card"><div class="spread"><h3>体の写真で分析</h3></div>
       <p class="small">体の写真から、目標に対して足りない部位と、重点的にやるトレーニングをAIが提案します。月に1回くらい、同じ場所・同じ明るさで撮ると変化がわかりやすいです。</p>
@@ -1777,7 +1777,7 @@ function bodySheet(b, isNew) {
 }
 
 function bodyReadPrompt(src, count) {
-  const what = src === 'inbody' ? 'InBody（インボディ）の測定結果（スマホアプリの画面のスクリーンショット、または結果用紙）' : 'タニタの体組成計の表示画面（または記録アプリの画面）';
+  const what = src === 'inbody' ? 'InBody（インボディ）の測定結果（スマホアプリの画面のスクリーンショット、または結果用紙）' : '家庭用の体重計・体組成計（タニタ・オムロンなど）の表示画面（または記録アプリの画面）';
   const multi = count > 1 ? `画像は${count}枚あり、同じ結果画面をスクロールしながら撮ったもの（画面収録から切り出したコマを含む）です。重なっている部分は同じ値なので、すべての画像を見て各項目を1回ずつまとめてください。\n` : '';
   return `これは${what}の画像です。${multi}写っている数値を正確に読み取ってください。読み取れない項目は null にしてください。推測で数字を作らないでください。部位別（右腕・左腕・体幹・右脚・左脚）の筋肉量や体脂肪量、評価（標準・標準以上など）が写っていれば extra に入れてください。
 次の形のJSONだけを返してください:
@@ -2171,7 +2171,7 @@ const ACT = {
     bodySheet(b, true);
   },
   bodyQuick: () => openSheet('体重を記録', `
-    <p class="small">タニタの体重計の画面（またはアプリの画面）を撮ると、AIが数値を読み取ります。</p>
+    <p class="small">家庭の体重計の画面（またはアプリの画面）を撮ると、AIが数値を読み取ります。</p>
     <button class="btn primary block" data-act="bodyReadPhoto" data-src="tanita">📷 画面を撮って読み取る</button>
     <button class="btn block" data-act="bodyReadPhoto" data-src="inbody" style="margin-top:8px">📱 InBodyを取り込む</button>
     <button class="btn block" data-act="bodyManual" style="margin-top:8px">✏️ 手で入力</button>`),
