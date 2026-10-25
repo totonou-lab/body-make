@@ -1021,8 +1021,8 @@ const VIEWS = {
         <div class="stat"><b>${r1(num(b.skeletalMuscle ?? b.muscle))}</b><span>${b.skeletalMuscle != null ? '骨格筋量' : '筋肉量'} kg</span></div>
       </div><p class="muted" style="text-align:center">${jpDate(b.date)}・${SOURCES[b.source] || ''}</p>` : '<p class="muted">まだ記録がありません。</p>'}
       ${ib.length >= 2 ? `<div class="hint small">InBody ${jpDate(ib[0].date)}から：体重 <b>${diff('weight', 'kg')}</b>・体脂肪率 <b>${diff('fatPct', '%')}</b>・骨格筋量 <b>${diff('skeletalMuscle', 'kg')}</b></div>
-        <p class="small chart-title">体重（InBody）</p>${lineChart(ib.slice(-20).filter(x => num(x.weight) != null).map(x => ({ d: x.date, y: num(x.weight) })), 'kg', 'var(--accent)')}
-        <p class="small chart-title">体脂肪率（InBody）</p>${lineChart(ib.slice(-20).filter(x => num(x.fatPct) != null).map(x => ({ d: x.date, y: num(x.fatPct) })), '%', 'var(--chart2)')}` : ''}
+        <p class="small chart-title">体重（InBody）</p>${lineChart(ib.slice(-20).filter(x => num(x.weight) != null).map(x => ({ d: x.date, y: num(x.weight), id: x.id })), 'kg', 'var(--accent)')}
+        <p class="small chart-title">体脂肪率（InBody）</p>${lineChart(ib.slice(-20).filter(x => num(x.fatPct) != null).map(x => ({ d: x.date, y: num(x.fatPct), id: x.id })), '%', 'var(--chart2)')}` : ''}
       <div class="grid2 sec-btns">
         <button class="btn" data-act="bodyQuick">⚖️ 体重を記録</button>
         <button class="btn" data-act="bodyReadPhoto" data-src="inbody">📱 InBody</button>
@@ -1096,11 +1096,11 @@ const VIEWS = {
     if (g) html += `<div class="card"><h3>腹筋が見えるまでの目安</h3>${absGuideHtml(g)}</div>`;
     if (list.length >= 2) {
       const last = list.slice(-60);
-      html += `<div class="card"><h3>体重の変化</h3>${lineChart(last.filter(b => num(b.weight) != null).map(b => ({ d: b.date, y: num(b.weight) })), 'kg', 'var(--accent)')}
+      html += `<div class="card"><h3>体重の変化</h3>${lineChart(last.filter(b => num(b.weight) != null).map(b => ({ d: b.date, y: num(b.weight), id: b.id })), 'kg', 'var(--accent)')}
         <h3 style="margin-top:12px">体脂肪率の変化</h3>
         <div class="legend"><span><i style="background:var(--accent)"></i>InBody</span><span><i style="background:var(--chart2)"></i>タニタ</span></div>
-        ${lineChart(last.filter(b => num(b.fatPct) != null && b.source === 'inbody').map(b => ({ d: b.date, y: num(b.fatPct) })), '%', 'var(--accent)',
-          last.filter(b => num(b.fatPct) != null && b.source !== 'inbody').map(b => ({ d: b.date, y: num(b.fatPct) })))}
+        ${lineChart(last.filter(b => num(b.fatPct) != null && b.source === 'inbody').map(b => ({ d: b.date, y: num(b.fatPct), id: b.id })), '%', 'var(--accent)',
+          last.filter(b => num(b.fatPct) != null && b.source !== 'inbody').map(b => ({ d: b.date, y: num(b.fatPct), id: b.id })))}
         <p class="muted">InBodyとタニタは測り方が違うので、体脂肪率は同じ機械どうしで比べてください。</p></div>`;
     }
     html += `<div class="card"><div class="spread"><h3>体の写真で分析</h3></div>
@@ -1276,6 +1276,9 @@ function absGuideHtml(g) {
     期限までだと<b>週${r1(g.perWeek)}kg</b>ペース。${g.safe ? '無理のないペースです。' : '少し急なペースです。期限までに全部は難しくても、近づけば腹筋の上の方から見えてきます。焦って食事を減らしすぎないように。'}</div>`;
 }
 
+// タップした位置に一番近い点を探すため、描いたグラフの点を覚えておく
+const CHARTS = {};
+let chartSeq = 0;
 function lineChart(pts, unit, color, pts2 = []) {
   const all = [...pts, ...pts2];
   if (all.length < 2) return '<p class="muted">2回以上記録するとグラフが出ます。</p>';
@@ -1289,15 +1292,26 @@ function lineChart(pts, unit, color, pts2 = []) {
   const line = (ps, c) => ps.length ? `<polyline fill="none" stroke="${c}" stroke-width="2" points="${ps.map(p => `${x(p.d)},${y(p.y)}`).join(' ')}"/>
     ${ps.map(p => `<circle cx="${x(p.d)}" cy="${y(p.y)}" r="2.5" fill="${c}"/>`).join('')}` : '';
   const md = d => { const t = parseYmd(d); return `${t.getMonth() + 1}/${t.getDate()}`; };
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${unit}の変化">
+  const id = 'ch' + (++chartSeq);
+  CHARTS[id] = { W, unit, pts: all.map(p => ({ ...p, vx: x(p.d), vy: y(p.y) })) };
+  return `<svg class="chart tap" viewBox="0 0 ${W} ${H}" role="img" aria-label="${unit}の変化" data-act="chartTap" data-chart="${id}">
     <line class="ax" x1="${L}" x2="${W - R}" y1="${y(hi)}" y2="${y(hi)}"/>
     <line class="ax" x1="${L}" x2="${W - R}" y1="${y(lo)}" y2="${y(lo)}"/>
     <text x="${L - 4}" y="${y(hi) + 3}" text-anchor="end">${r1(hi)}</text>
     <text x="${L - 4}" y="${y(lo) + 3}" text-anchor="end">${r1(lo)}</text>
     <text x="${L}" y="${H - 6}">${md(dates[0])}</text>
     <text x="${W - R}" y="${H - 6}" text-anchor="end">${md(dates.at(-1))}</text>
+    <line class="sel-line" x1="0" x2="0" y1="${T}" y2="${H - B}" visibility="hidden"/>
     ${line(pts, color)}${line(pts2, 'var(--chart2)')}
-  </svg>`;
+    <circle class="sel-dot" cx="0" cy="0" r="5.5" visibility="hidden"/>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="transparent"/>
+  </svg>
+  <div class="chart-tip" id="tip-${id}">👆 グラフをタップすると、その日の数値が出ます</div>`;
+}
+function bodyTipText(b) {
+  const parts = [num(b.weight) != null && `体重 <b>${r1(num(b.weight))}kg</b>`, num(b.fatPct) != null && `体脂肪率 <b>${r1(num(b.fatPct))}%</b>`,
+    num(b.skeletalMuscle) != null ? `骨格筋量 ${r1(num(b.skeletalMuscle))}kg` : num(b.muscle) != null && `筋肉量 ${r1(num(b.muscle))}kg`].filter(Boolean);
+  return `<b>${jpDate(b.date)}</b> <span class="tag src-${b.source}">${SOURCES[b.source] || ''}</span><br>${parts.join('・')}`;
 }
 
 // ===================== 食事のシート =====================
@@ -2303,6 +2317,20 @@ const ACT = {
     // 戻ってきたときに「取り込む」ボタンを出すため、実行した時刻を覚えておく
     try { localStorage.setItem('bodymake-hk-pending', String(Date.now())); } catch {}
     location.href = 'shortcuts://run-shortcut?name=' + encodeURIComponent(S.settings.shortcutName || 'bodymake用にコピー');
+  },
+  chartTap(el, e) {
+    const c = CHARTS[el.dataset.chart];
+    if (!c) return;
+    const r = el.getBoundingClientRect();
+    const vx = ((e.clientX - r.left) / r.width) * c.W;
+    const vy = ((e.clientY - r.top) / r.height) * (c.W * r.height / r.width);
+    // 横の位置が一番近い点（同じ日に2本の線があれば、縦の位置も近いほう）
+    const p = c.pts.reduce((best, q) => (Math.abs(q.vx - vx) + Math.abs(q.vy - vy) * 0.2 < Math.abs(best.vx - vx) + Math.abs(best.vy - vy) * 0.2 ? q : best));
+    const line = el.querySelector('.sel-line'), dot = el.querySelector('.sel-dot');
+    line.setAttribute('x1', p.vx); line.setAttribute('x2', p.vx); line.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', p.vx); dot.setAttribute('cy', p.vy); dot.setAttribute('visibility', 'visible');
+    const b = S.body.find(x => x.id === p.id);
+    $('#tip-' + el.dataset.chart).innerHTML = b ? bodyTipText(b) : `<b>${jpDate(p.d)}</b>　${r1(p.y)}${c.unit}`;
   },
   async healthPaste() {
     let text = '';
