@@ -1055,6 +1055,8 @@ const VIEWS = {
       ${t ? bar('カロリー', tot.kcal, t.kcal, 'kcal') + bar('たんぱく質', tot.protein, t.protein, 'g')
         : '<p class="muted">体重を一度記録すると、1日の目標カロリーが出ます。</p>'}
       ${t ? `<p class="muted">あと ${r0(Math.max(0, t.kcal - tot.kcal))} kcal・たんぱく質 ${r0(Math.max(0, t.protein - tot.protein))} g${t.extra ? `（${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} を目標に足しています）` : ''}</p>` : ''}
+      ${usualBreakfastBtn()}
+      ${nextMealHtml(true)}
       <div class="grid3 sec-btns">
         <button class="btn primary" data-act="mealPhoto">📷 撮る</button>
         <button class="btn" data-act="mealText">✏️ 文字で</button>
@@ -1113,6 +1115,7 @@ const VIEWS = {
       ${bar('脂質', tot.fat, t?.fat, 'g')}
       ${bar('炭水化物', tot.carbs, t?.carbs, 'g')}
       ${t?.extra ? `<p class="muted">🚲🏃 この日の${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} 分を目標に足しています</p>` : ''}
+      ${mealDate === ymd() ? usualBreakfastBtn() + nextMealHtml(false) : ''}
     </div>`;
     html += `<div class="btn-grid">
       <button class="btn primary" data-act="mealPhoto">📷 写真で記録</button>
@@ -1376,6 +1379,85 @@ function bodyTipText(b) {
   return `<b>${jpDate(b.date)}</b> <span class="tag src-${b.source}">${SOURCES[b.source] || ''}</span><br>${parts.join('・')}`;
 }
 
+// ===================== 次の食事の提案 =====================
+// よくある食事 [名前, 種類, kcal, たんぱく質, 脂質, 炭水化物]（1人前のおおよその値）
+const DISHES = [
+  ['焼き魚定食（鮭）', '外食・自炊', 600, 35, 18, 75], ['刺身定食', '外食', 550, 35, 8, 80], ['サバの味噌煮定食', '外食', 750, 30, 30, 80],
+  ['鶏むね肉のソテー＋ご飯半膳＋サラダ', '自炊', 550, 40, 12, 60], ['豚しゃぶサラダ＋ご飯小盛り', '自炊', 500, 30, 18, 50],
+  ['豆腐ハンバーグ＋ご飯小盛り＋味噌汁', '自炊', 550, 28, 20, 60], ['冷奴＋納豆＋味噌汁＋ご飯', '自炊', 500, 25, 14, 70],
+  ['鶏肉と野菜の鍋（しめなし）', '自炊', 400, 35, 15, 20], ['親子丼', '外食・自炊', 650, 30, 15, 95], ['牛丼（並）', '外食', 650, 20, 25, 90],
+  ['焼肉（赤身中心）＋ご飯小盛り', '外食', 700, 40, 35, 50], ['唐揚げ定食', '外食', 900, 35, 45, 90], ['とんかつ定食', '外食', 1000, 35, 50, 100],
+  ['野菜炒め定食', '外食', 700, 20, 30, 85], ['寿司（10貫）', '外食', 550, 25, 8, 90], ['とろろそば', '外食', 450, 18, 4, 85],
+  ['ラーメン', '外食', 800, 25, 30, 100], ['カレーライス', '外食・自炊', 800, 20, 25, 120],
+  ['サラダチキン＋野菜スープ＋おにぎり1個', 'コンビニ', 400, 30, 5, 55], ['おでん（卵・大根・ちくわ・こんにゃく）', 'コンビニ', 250, 20, 8, 25],
+  ['焼き鳥（塩・5本）＋サラダ', '外食・コンビニ', 450, 35, 22, 15], ['ギリシャヨーグルト＋ゆで卵2個', 'コンビニ', 250, 25, 10, 12],
+];
+// 次に何を食べる番か: 夕ごはんが未記録なら、お昼を食べた（または15時以降）なら夕ごはん、それ以外はお昼ごはん
+function nextMealContext() {
+  const t = targetsOn(ymd());
+  if (!t) return null;
+  const ms = mealsOn(ymd()), has = type => ms.some(m => m.type === type);
+  if (has('dinner')) return null;
+  const meal = has('lunch') || new Date().getHours() >= 15 ? 'dinner' : 'lunch';
+  const tot = dayTotals(ymd());
+  // お昼のときは、夕ごはんの分を残すために残りの約半分を目安にする
+  const share = meal === 'lunch' ? 0.5 : 1;
+  const left = k => Math.max(0, (t[k] - tot[k]) * share);
+  return { meal, label: meal === 'lunch' ? 'お昼ごはん' : '夕ごはん', kcal: left('kcal'), protein: left('protein'), fat: left('fat'), carbs: left('carbs'), share };
+}
+function mealAdvice(c) {
+  const tips = [];
+  if (c.kcal < 300) tips.push('残りが少なめです。汁物やサラダ、たんぱく質中心で軽めにしましょう。');
+  if (c.fat < 12) tips.push('🛢 脂質が残り少ないので、揚げ物は控えて「焼く・蒸す・煮る」料理に。');
+  else if (c.fat >= 30 && c.kcal >= 800) tips.push('🍗 今日は脂質に余裕があるので、揚げ物も食べてOK。');
+  if (c.protein >= 35) tips.push('💪 たんぱく質がまだ足りていません。鶏むね・魚・豆腐・卵などをメインに。');
+  if (c.carbs < 40) tips.push('🍚 ご飯は半膳くらいに。');
+  else if (c.carbs >= 90) tips.push('🍚 ご飯は普通盛りでOK。');
+  return tips;
+}
+function dishPicks(c) {
+  // 残りのカロリーと脂質に収まるものから、たんぱく質がとれて残りに近いものを選ぶ
+  const ok = DISHES.filter(d => d[2] <= c.kcal + 50 && d[4] <= c.fat + 8);
+  const score = d => -Math.abs(c.kcal - d[2]) / 10 - Math.max(0, c.protein - d[3]) * 1.5 + d[3] * 0.3;
+  const picks = [...ok].sort((a, b) => score(b) - score(a)).slice(0, 3);
+  return picks.length ? picks : [...DISHES].sort((a, b) => a[2] - b[2]).slice(0, 2);
+}
+function nextMealHtml(compact) {
+  const c = nextMealContext();
+  if (!c) return '';
+  const tips = mealAdvice(c);
+  return `<div class="next-meal">
+    <div class="small"><b>${c.meal === 'dinner' ? '🌙' : '☀️'} ${c.label}の目安</b>：あと約 <b>${r0(c.kcal)}kcal</b>・たんぱく質 ${r0(c.protein)}g・脂質 ${r0(c.fat)}g・炭水化物 ${r0(c.carbs)}g${c.share < 1 ? '<span class="muted">（夕ごはんの分を残して、残りの半分）</span>' : ''}</div>
+    ${tips.map(x => `<div class="small">${x}</div>`).join('')}
+    ${compact ? '' : `<div class="small" style="margin-top:6px"><b>おすすめの例</b></div>
+      ${dishPicks(c).map(d => `<div class="dish"><span>${h(d[0])} <span class="tag">${d[1]}</span></span><span class="muted">${d[2]}kcal・P${d[3]} F${d[4]} C${d[5]}</span></div>`).join('')}`}
+    <div class="row wrap" style="margin-top:6px">
+      ${compact ? `<button class="btn sm" data-act="go" data-tab="meals">おすすめの例を見る</button>` : ''}
+      <button class="btn sm" data-act="mealSuggestAI">🤖 AIに${c.label}を相談</button>
+    </div>
+  </div>`;
+}
+// いつもの朝ごはん: 今日まだ朝ごはんが無ければ1タップで記録できるボタン
+function usualBreakfastBtn() {
+  const u = S.settings.usualBreakfast;
+  if (!u || mealsOn(ymd()).some(m => m.type === 'breakfast')) return '';
+  return `<button class="btn block usual-btn" data-act="usualBreakfast">🍞 いつもの朝ごはんを記録（${h(u.name)}・${r0(u.kcal)}kcal）</button>`;
+}
+function mealSuggestPrompt(c, wish) {
+  const ms = mealsOn(ymd()).map(m => `${MEAL_TYPES.find(x => x[0] === m.type)[1]}: ${m.name}（${r0(m.kcal)}kcal）`).join('\n') || 'まだなし';
+  return `あなたは日本の管理栄養士です。利用者の${c.label}のメニューを提案してください。
+【今日食べたもの】
+${ms}
+【${c.label}で食べてよい量の目安】約${r0(c.kcal)}kcal・たんぱく質${r0(c.protein)}g・脂質${r0(c.fat)}g・炭水化物${r0(c.carbs)}g
+【なりたい体・目標】
+${goalsText()}
+【利用者の希望・状況】${wish || '特になし'}
+- 日本で手に入りやすい料理で、外食・コンビニ・自炊がわかるように。希望や状況があればそれに合わせる
+- たんぱく質をしっかりとり、脂質は目安を超えないように。余裕があれば揚げ物などを楽しんでもよいと伝える
+次の形のJSONだけを返してください:
+{"advice":"全体のアドバイス（1〜2文）","options":[{"name":"メニュー名","type":"外食 / コンビニ / 自炊","detail":"中身や量（例: ご飯は半膳）","kcal":数値,"protein":数値,"fat":数値,"carbs":数値,"point":"このメニューのポイント（1文）"}]}`;
+}
+
 // ===================== 食事のシート =====================
 function mealSheet(m, isNew) {
   draft = structuredClone(m);
@@ -1400,7 +1482,8 @@ function mealSheet(m, isNew) {
     <div class="${isNew ? '' : 'grid2'}" style="margin-top:8px">
       <button class="btn ${isNew ? 'block' : ''}" data-act="mealToFav">⭐ お気に入りに追加</button>
       ${isNew ? '' : '<button class="btn danger" data-act="mealDelete">削除</button>'}
-    </div>`);
+    </div>
+    <button class="btn block" data-act="mealUsualBreakfast" style="margin-top:8px">🍞 いつもの朝ごはんにする</button>`);
   draft._isNew = isNew;
   renderMealItems();
 }
@@ -1905,7 +1988,7 @@ function renderWorkoutList() {
 
 // ===================== ボタンの動き =====================
 const ACT = {
-  go: el => { tab = el.dataset.tab; render(); },
+  go: el => { tab = el.dataset.tab; if (tab === 'meals') mealDate = ymd(); render(); },
   closeSheet,
   aiCancel: () => aiCtrl?.abort(),
 
@@ -1927,6 +2010,36 @@ const ACT = {
     const r = await runAI('AIが計算中…', sig => gemini(mealTextPrompt(text), [], sig), 'text');
     if (!r) return;
     mealSheet(newMeal(normalizeMeal(r)), true);
+  },
+  async mealUsualBreakfast() {
+    recalcMeal(draft);
+    const name = $('#m-name').value.trim() || draft.items.map(i => i.name).join('・') || '朝ごはん';
+    S.settings.usualBreakfast = { name, items: structuredClone(draft.items), kcal: draft.kcal, protein: draft.protein, fat: draft.fat, carbs: draft.carbs };
+    await save('settings');
+    toast('いつもの朝ごはんに登録しました。次からホーム画面のボタン1つで記録できます');
+  },
+  async usualBreakfast() {
+    const u = S.settings.usualBreakfast;
+    const m = recalcMeal(newMeal({ date: ymd(), type: 'breakfast', name: u.name, items: structuredClone(u.items), created: Date.now() }));
+    S.meals.push(m);
+    await save('meals');
+    toast(`いつもの朝ごはん（${r0(m.kcal)}kcal）を記録しました`);
+    render();
+  },
+  async mealSuggestAI() {
+    const c = nextMealContext();
+    if (!c) return;
+    const wish = prompt(`${c.label}の希望や状況があれば書いてください（なければ空のままOK）\n例：外食で焼肉の予定／冷蔵庫に豚肉とキャベツ／さっぱりしたい`, '');
+    if (wish === null) return;
+    const r = await runAI(`AIが${c.label}を考えています…`, sig => gemini(mealSuggestPrompt(c, wish.trim()), [], sig), 'text');
+    if (!r?.options?.length) return;
+    openSheet(`${c.label}の提案`, `
+      <p class="small">目安：あと約 <b>${r0(c.kcal)}kcal</b>・たんぱく質 ${r0(c.protein)}g・脂質 ${r0(c.fat)}g</p>
+      ${r.advice ? `<div class="hint small">💬 ${h(r.advice)}</div>` : ''}
+      ${r.options.map(o => `<div class="ex"><div class="ex-name">${h(o.name)} <span class="tag">${h(o.type || '')}</span></div>
+        <div class="small">${h(o.detail || '')}</div>
+        <div class="muted">${r0(num(o.kcal))}kcal・P${r0(num(o.protein))} F${r0(num(o.fat))} C${r0(num(o.carbs))}</div>
+        ${o.point ? `<div class="small">💡 ${h(o.point)}</div>` : ''}</div>`).join('')}`);
   },
   shareNew: () => shareSheet(),
   shareMode: el => { draft.mode = el.dataset.v; renderShare(); },
