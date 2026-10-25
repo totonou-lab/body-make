@@ -24,6 +24,10 @@ const BODY_FIELDS = [
   ['score', 'InBody点数', '点'],
 ];
 
+const CARDIO_TYPES = ['トレッドミル（ウォーキング・ランニング）', 'エアロバイク', 'クロストレーナー', 'ステアクライマー（階段）', 'ローイング', 'その他'];
+const LB = 2.20462;
+const BIKES = [['normal', '普通の自転車（ママチャリ・クロスバイク）'], ['assist', '電動アシスト自転車'], ['road', 'ロードバイク']];
+
 const SOURCES = { inbody: 'InBody', tanita: 'タニタ', manual: '手入力' };
 
 const MODES = [
@@ -48,11 +52,14 @@ const DEFAULT_SETTINGS = {
   mode: 'cut',
   daysPerWeek: 3,
   equipment: ['free', 'machine', 'cable', 'smith'],
+  unit: 'kg',
   override: { kcal: '', protein: '' },
+  bike: 'normal',
+  routes: [],
 };
 
 // ===================== 保存（iPhoneの中のデータベース） =====================
-const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [] };
+const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [], rides: [] };
 let dbPromise;
 
 function db() {
@@ -111,6 +118,19 @@ const r0 = n => (n == null ? '–' : Math.round(n));
 const r1 = n => (n == null ? '–' : Math.round(n * 10) / 10);
 const sum = (arr, k) => arr.reduce((a, x) => a + (num(x[k]) || 0), 0);
 
+// 重さは内部ではいつもkgで持ち、表示と入力のときだけlbに換算する
+const toUnit = (kg, u) => (kg == null ? null : u === 'lb' ? Math.round(kg * LB * 10) / 10 : Math.round(kg * 100) / 100);
+const fromUnit = (v, u) => (v == null ? null : u === 'lb' ? Math.round((v / LB) * 1000) / 1000 : v);
+
+// iPhoneの日付欄は見た目が崩れやすいので、表示は自前・選ぶときだけ本物の日付欄を使う
+function dateBox(attrs, value) {
+  return `<span class="datebox"><span class="datebox-text">${value ? ymdText(value) : '日付を選ぶ'}</span><input type="date" ${attrs} value="${h(value)}"></span>`;
+}
+function ymdText(s) {
+  const d = parseYmd(s);
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}（${'日月火水木金土'[d.getDay()]}）`;
+}
+
 function parseYmd(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
 function jpDate(s) {
   const d = parseYmd(s);
@@ -128,7 +148,7 @@ function toast(msg) {
 }
 function openSheet(title, html) {
   $('#sheet-title').textContent = title;
-  $('#sheet-body').innerHTML = html;
+  $('#sheet-body').innerHTML = html + '<button class="btn block" data-act="closeSheet" style="margin-top:10px">閉じる（保存しない）</button>';
   $('#sheet').hidden = false;
   $('.sheet-panel').scrollTop = 0;
   document.body.classList.add('noscroll');
@@ -139,9 +159,24 @@ function closeSheet() {
   document.body.classList.remove('noscroll');
   draft = null;
 }
-function busy(on, msg = 'AIが分析中…') {
+function busy(on, msg = 'AIが分析中…', est = 0) {
   $('#busy').hidden = !on;
   $('#busy-msg').textContent = msg;
+  $('#busy-progress').hidden = !(on && est);
+  clearInterval(busy.timer);
+  if (!on || !est) return;
+  const start = Date.now();
+  const tick = () => {
+    const t = (Date.now() - start) / 1000;
+    // 予想時間までに90%、それを過ぎたらゆっくり99%に近づける
+    const pct = t < est ? (t / est) * 90 : 90 + 9 * (1 - Math.exp(-(t - est) / est));
+    $('#busy-fill').style.width = pct + '%';
+    $('#busy-time').textContent = t < est
+      ? `経過 ${Math.floor(t)}秒 ・ あと約${Math.ceil(est - t)}秒`
+      : `経過 ${Math.floor(t)}秒 ・ 予想より時間がかかっています。もう少しお待ちください`;
+  };
+  tick();
+  busy.timer = setInterval(tick, 250);
 }
 
 // ===================== 写真 =====================
@@ -224,7 +259,7 @@ function parseJSON(text) {
   return JSON.parse(t.slice(a, b + 1));
 }
 
-async function gemini(prompt, images = []) {
+async function gemini(prompt, images = [], signal) {
   const key = S.settings.apiKey.trim();
   if (!key) throw new Error('NO_KEY');
   const models = [S.settings.model, ...MODELS].filter((m, i, a) => m && a.indexOf(m) === i);
@@ -243,6 +278,7 @@ async function gemini(prompt, images = []) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body,
+      signal,
     });
     if (res.ok) {
       const j = await res.json();
@@ -265,11 +301,48 @@ function aiErrorMessage(e) {
   return 'AIの処理に失敗しました。\n' + m.slice(0, 150);
 }
 
-async function runAI(msg, fn) {
-  busy(true, msg);
-  try { return await fn(); }
-  catch (e) { console.error(e); alert(aiErrorMessage(e)); return null; }
-  finally { busy(false); }
+// かかる時間の予想: [基本の秒数, 画像1枚あたりの秒数]。実際の時間を覚えて補正する
+const EST_DEFAULT = { meal: [15, 0], text: [10, 0], body: [12, 3], kmemo: [20, 4], analyze: [30, 6], plan: [50, 0], test: [5, 0] };
+const AI_TIMEOUT = 300;
+let aiCtrl = null;
+
+function loadEst() {
+  try { return JSON.parse(localStorage.getItem('bodymake-est')) || {}; } catch { return {}; }
+}
+function baseEst(kind, units) {
+  const [base, per] = EST_DEFAULT[kind] || [20, 0];
+  return base + per * units;
+}
+const estimateSec = (kind, units) => baseEst(kind, units) * (loadEst()[kind]?.ratio || 1);
+function learnEst(kind, units, sec) {
+  const all = loadEst();
+  const ratio = sec / baseEst(kind, units);
+  all[kind] = { ratio: all[kind] ? all[kind].ratio * 0.5 + ratio * 0.5 : ratio };
+  try { localStorage.setItem('bodymake-est', JSON.stringify(all)); } catch {}
+}
+
+async function runAI(msg, fn, kind = '', units = 0) {
+  const ctrl = new AbortController();
+  aiCtrl = ctrl;
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, AI_TIMEOUT * 1000);
+  const start = Date.now();
+  busy(true, msg, estimateSec(kind, units));
+  try {
+    const r = await fn(ctrl.signal);
+    if (kind) learnEst(kind, units, (Date.now() - start) / 1000);
+    return r;
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      if (timedOut) alert('5分たっても返事がなかったので止めました。\n画像の枚数を減らす（短めの動画にする）か、時間をおいて試してください。');
+      else toast('中止しました');
+    } else { console.error(e); alert(aiErrorMessage(e)); }
+    return null;
+  } finally {
+    clearTimeout(timer);
+    aiCtrl = null;
+    busy(false);
+  }
 }
 
 // ===================== 体のデータ・目標の計算 =====================
@@ -301,6 +374,31 @@ function targets() {
   const fatG = (kcal * 0.25) / 9;
   const carbs = Math.max(0, (kcal - protein * 4 - fatG * 9) / 4);
   return { bmr, tdee, kcal, protein, fat: fatG, carbs, how };
+}
+
+// ===================== 自転車での移動 =====================
+// METs（運動の強さ）から計算。安静時の分（1MET）は1日の消費に入っているので差し引く
+function rideKcal(km, min, bike) {
+  const w = num(latestWith('weight')?.weight) || 65;
+  const speed = num(min) ? km / (min / 60) : bike === 'road' ? 22 : 15;
+  let met = speed < 16 ? 4.0 : speed < 19 ? 6.8 : speed < 22 ? 8.0 : 10.0;
+  if (bike === 'assist') met = Math.max(2.5, met * 0.75);
+  return Math.round((met - 1) * w * (km / speed));
+}
+const ridesOn = date => S.rides.filter(r => r.date === date);
+const rideKcalOn = date => ridesOn(date).reduce((a, r) => a + r.kcal, 0);
+// その日の目標: 自転車で使った分を炭水化物として上乗せ
+function targetsOn(date) {
+  const t = targets();
+  if (!t) return null;
+  const extra = rideKcalOn(date);
+  return { ...t, kcal: t.kcal + extra, carbs: t.carbs + extra / 4, ride: extra };
+}
+function rideWeekText() {
+  const from = addDays(ymd(), -6);
+  const rs = S.rides.filter(r => r.date >= from);
+  if (!rs.length) return '記録なし';
+  return `直近7日で ${r1(rs.reduce((a, r) => a + r.km, 0))}km・約${rs.reduce((a, r) => a + r.kcal, 0)}kcal（${new Set(rs.map(r => r.date)).size}日）`;
 }
 
 // 腹筋が見えてくる体脂肪率の目安までの距離
@@ -435,7 +533,7 @@ const sortedWorkouts = () => [...S.workouts].sort((a, b) => a.date.localeCompare
 
 function nextPlanDay() {
   const days = currentPlan().days;
-  const last = sortedWorkouts().at(-1);
+  const last = sortedWorkouts().reverse().find(w => days.some(d => d.name === w.dayName));
   if (!last) return days[0];
   const i = days.findIndex(d => d.name === last.dayName);
   return days[(i + 1) % days.length];
@@ -449,12 +547,13 @@ function lastPerf(name, beforeId) {
   }
   return null;
 }
-const setsText = sets => sets.map(s => `${s.w ?? '-'}kg×${s.r ?? '-'}`).join(', ');
-function overloadHint(e, last) {
+const setsText = (sets, u = 'kg') => sets.map(s => `${toUnit(num(s.w), u) ?? '-'}${u}×${s.r ?? '-'}`).join(', ');
+const cardioText = cs => (cs || []).map(c => `${c.type} ${c.min}分${num(c.km) ? ` ${c.km}km` : ''}${num(c.kcal) ? ` ${c.kcal}kcal` : ''}`).join('、');
+function overloadHint(e, last, u = 'kg') {
   if (!last || /秒/.test(e.reps || '')) return '';
   const top = parseInt(String(e.reps || '').split(/[-〜~]/).pop(), 10);
   if (!top) return '';
-  return last.sets.every(s => num(s.r) >= top) ? `前回は全セット${top}回できました → 今日は少し重くしてみましょう（+2.5kgほど）` : '';
+  return last.sets.every(s => num(s.r) >= top) ? `前回は全セット${top}回できました → 今日は少し重くしてみましょう（${u === 'lb' ? '+5lbほど' : '+2.5kgほど'}）` : '';
 }
 // 推定の最大重量（1回だけ挙げられる重さ）: 重さ×(1+回数/30)
 const e1rm = s => (num(s.w) > 0 && num(s.r) > 0 ? num(s.w) * (1 + num(s.r) / 30) : 0);
@@ -475,7 +574,7 @@ function strengthText() {
 function recentWorkoutsText() {
   const ws = sortedWorkouts().slice(-12);
   if (!ws.length) return 'まだ記録なし';
-  return ws.map(w => `${w.date} ${w.dayName}: ` + w.exercises.map(e => `${e.name} ${setsText(e.sets)}`).join(' / ')).join('\n');
+  return ws.map(w => `${w.date} ${w.dayName}: ` + [...w.exercises.map(e => `${e.name} ${setsText(e.sets)}`), ...(w.cardio?.length ? ['有酸素 ' + cardioText(w.cardio)] : [])].join(' / ')).join('\n');
 }
 function latestAnalysisText() {
   const a = S.analyses.at(-1);
@@ -501,7 +600,7 @@ function render() {
 const VIEWS = {
   home() {
     const st = S.settings;
-    const t = targets();
+    const t = targetsOn(ymd());
     const tot = dayTotals(ymd());
     const b = latestBody();
     const g = absGuide();
@@ -521,8 +620,9 @@ const VIEWS = {
     html += `<div class="card"><h3>今日の食事</h3>
       ${t ? bar('カロリー', tot.kcal, t.kcal, 'kcal') + bar('たんぱく質', tot.protein, t.protein, 'g')
         : '<p class="muted">体重を一度記録すると、1日の目標カロリーが出ます。</p>'}
-      ${t ? `<p class="muted">あと ${r0(Math.max(0, t.kcal - tot.kcal))} kcal・たんぱく質 ${r0(Math.max(0, t.protein - tot.protein))} g</p>` : ''}
+      ${t ? `<p class="muted">あと ${r0(Math.max(0, t.kcal - tot.kcal))} kcal・たんぱく質 ${r0(Math.max(0, t.protein - tot.protein))} g${t.ride ? `（自転車の ${t.ride}kcal を目標に足しています）` : ''}</p>` : ''}
     </div>`;
+    html += rideCardHtml();
     html += `<div class="card"><h3>目標</h3><ul class="plain">${st.goals.map(x => `<li>${h(x)}</li>`).join('')}</ul>
       ${g ? absGuideHtml(g) : '<p class="muted">性別と体脂肪率が入ると、腹筋が見えるまでの目安を出します。</p>'}</div>`;
     html += `<div class="card"><h3>体の最新データ</h3>${b ? `
@@ -539,7 +639,7 @@ const VIEWS = {
   },
 
   meals() {
-    const t = targets();
+    const t = targetsOn(mealDate);
     const tot = dayTotals(mealDate);
     const ms = mealsOn(mealDate);
     let html = `<div class="datenav">
@@ -552,6 +652,7 @@ const VIEWS = {
       ${bar('たんぱく質', tot.protein, t?.protein, 'g')}
       ${bar('脂質', tot.fat, t?.fat, 'g')}
       ${bar('炭水化物', tot.carbs, t?.carbs, 'g')}
+      ${t?.ride ? `<p class="muted">🚲 この日の自転車 ${t.ride}kcal 分を目標に足しています</p>` : ''}
     </div>`;
     html += `<div class="btn-grid">
       <button class="btn primary" data-act="mealPhoto">📷 写真で記録</button>
@@ -612,17 +713,26 @@ const VIEWS = {
   train() {
     const plan = currentPlan();
     const ws = sortedWorkouts().reverse();
-    let html = `<button class="btn primary block" data-act="startWorkout" style="margin-bottom:12px">🏋️ 今日のトレーニングを記録</button>`;
+    const next = nextPlanDay();
+    let html = `<div class="btn-grid">
+      <button class="btn primary" data-act="startWorkout">🏋️ 筋トレを記録</button>
+      <button class="btn" data-act="startCardio">🏃 有酸素だけ記録</button>
+    </div>`;
     html += `<div class="card"><h3>筋トレメモから取り込む</h3>
       <p class="small">筋トレメモの記録画面を画面収録（またはスクショ）すると、AIが種目・重さ・回数を読み取ります。今の実力をもとに、AIが重さまで提案できるようになります。</p>
       <button class="btn block" data-act="kmemoGuide">📱 筋トレメモの記録を取り込む</button></div>`;
     html += `<div class="card"><div class="spread"><h3>今のメニュー</h3><span class="muted">${plan.source === 'ai' ? `AI作成 ${h(plan.createdAt)}` : '基本メニュー'}</span></div>
-      ${plan.days.map(d => `<h4>${h(d.name)}</h4><p class="muted" style="margin:0 0 4px">${h(d.focus || '')}</p>
-        ${d.exercises.map(e => `<div class="ex"><div class="ex-name">${h(e.name)}</div>
-          <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span><span class="muted">休憩 ${h(e.rest || '-')}${e.weight ? ` ・ 目安 ${h(e.weight)}` : ''}</span></div>
-          ${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}
-          ${e.note ? `<div class="muted">${h(e.note)}</div>` : ''}</div>`).join('')}`).join('')}
-      ${plan.tips?.length ? `<h4>アドバイス</h4><ul class="plain small">${plan.tips.map(t => `<li>${h(t)}</li>`).join('')}</ul>` : ''}
+      <p class="small" style="margin:0">${plan.days.length}日分のメニューを、1日目→${plan.days.length}日目の順にくり返します。</p></div>`;
+    html += plan.days.map((d, i) => `<div class="card day-card">
+      <div class="day-head"><span class="day-no">${i + 1}日目</span><div class="grow"><div class="day-name">${h(d.name)}${d.name === next.name ? ' <span class="tag">次はこれ</span>' : ''}</div><div class="muted">${h(d.focus || '')}</div></div></div>
+      ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${h(e.name)}</div>
+        <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b> ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
+        ${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}
+        ${e.note ? `<div class="muted">${h(e.note)}</div>` : ''}</div>`).join('')}
+      <button class="btn sm block" data-act="startDay" data-i="${i}" style="margin-top:8px">${i + 1}日目のメニューで記録する</button>
+    </div>`).join('');
+    html += `<div class="card">
+      ${plan.tips?.length ? `<h3>アドバイス</h3><ul class="plain small">${plan.tips.map(t => `<li>${h(t)}</li>`).join('')}</ul>` : ''}
       <div class="grid2" style="margin-top:10px">
         <button class="btn primary" data-act="planAI">🤖 AIで作り直す</button>
         <button class="btn" data-act="planDefault">基本メニューに戻す</button>
@@ -632,7 +742,7 @@ const VIEWS = {
     html += `<div class="card"><h3>トレーニングの記録</h3>${ws.length ? `<ul class="list">${ws.map(w => `
       <li class="tap" data-act="workoutEdit" data-id="${w.id}"><div class="grow">
         <div class="title">${jpDate(w.date)} ${h(w.dayName)}</div>
-        <div class="muted">${w.exercises.length}種目 ・ ${w.exercises.reduce((a, e) => a + e.sets.length, 0)}セット</div>
+        <div class="muted">${[w.exercises.length ? `${w.exercises.length}種目 ・ ${w.exercises.reduce((a, e) => a + e.sets.length, 0)}セット` : '', w.cardio?.length ? `有酸素 ${w.cardio.reduce((a, c) => a + (num(c.min) || 0), 0)}分` : ''].filter(Boolean).join(' ・ ')}</div>
       </div></li>`).join('')}</ul>` : '<p class="muted">まだ記録がありません。</p>'}</div>`;
     return html;
   },
@@ -665,7 +775,7 @@ const VIEWS = {
 
     <div class="card"><h3>目標</h3>
       <label class="field">なりたい体（1行に1つ）<textarea data-set="goals">${h(st.goals.join('\n'))}</textarea></label>
-      <label class="field">期限<input type="date" data-set="targetDate" value="${h(st.targetDate)}"></label>
+      <label class="field">期限${dateBox('data-set="targetDate"', st.targetDate)}</label>
       <label class="field">今の方針<select data-set="mode">${opt(MODES, st.mode)}</select></label>
       <label class="field">週のトレーニング回数<select data-set="daysPerWeek">${opt([[2, '週2回'], [3, '週3回'], [4, '週4回']], st.daysPerWeek)}</select></label>
       <p class="muted">12月の目標を達成したら、ここを書き換えればそのまま使い続けられます（例: 方針を「増量」にして胸をさらに大きく）。</p>
@@ -685,8 +795,17 @@ const VIEWS = {
       </div>
     </div>
 
+    <div class="card"><h3>自転車</h3>
+      <label class="field">ふだん乗る自転車<select data-set="bike">${opt(BIKES, st.bike)}</select></label>
+      <h4>よく使うルート</h4>
+      ${st.routes.length ? `<ul class="list">${st.routes.map((r, i) => `<li><div class="grow"><div class="title">${h(r.name)}</div><div class="muted">${r1(r.km)}km${r.round ? '（往復）' : ''}</div></div>
+        <button class="icon-btn" data-act="routeDelete" data-i="${i}" aria-label="ルートを削除">🗑</button></li>`).join('')}</ul>`
+        : '<p class="muted">自転車の記録画面で「よく使うルートとして保存」を選ぶと、ここに追加されます。</p>'}
+    </div>
+
     <div class="card"><h3>ジムで使える器具</h3>
       ${EQUIPMENT.map(([k, l]) => `<label class="check"><input type="checkbox" data-eq="${k}" ${st.equipment.includes(k) ? 'checked' : ''}>${h(l)}</label>`).join('')}
+      <label class="field">ふだんの重さの単位（記録画面でジムごとに切り替えもできます）<select data-set="unit">${opt([['kg', 'kg（キログラム）'], ['lb', 'lb（ポンド）']], st.unit)}</select></label>
     </div>
 
     <div class="card"><h3>データの保存（バックアップ）</h3>
@@ -746,7 +865,7 @@ function mealSheet(m, isNew) {
     ${m.note ? `<div class="hint small">AIのメモ: ${h(m.note)}</div>` : ''}
     <div class="grid2">
       <label class="field">いつ<select id="m-type">${opt}</select></label>
-      <label class="field">日付<input type="date" id="m-date" value="${m.date}"></label>
+      <label class="field">日付${dateBox('id="m-date"', m.date)}</label>
     </div>
     <label class="field">名前<input id="m-name" value="${h(m.name)}"></label>
     <div id="m-total" class="card" style="margin:8px 0"></div>
@@ -758,9 +877,9 @@ function mealSheet(m, isNew) {
     <table class="items"><tbody id="m-items"></tbody></table>
     <button class="btn sm" data-act="mealAddItem" style="margin:6px 0 12px">＋ 品目を追加</button>
     <button class="btn primary block" data-act="mealSave">保存する</button>
-    <div class="grid2" style="margin-top:8px">
-      <button class="btn" data-act="mealToFav">⭐ お気に入りに追加</button>
-      ${isNew ? '<button class="btn" data-act="closeSheet">やめる</button>' : '<button class="btn danger" data-act="mealDelete">削除</button>'}
+    <div class="${isNew ? '' : 'grid2'}" style="margin-top:8px">
+      <button class="btn ${isNew ? 'block' : ''}" data-act="mealToFav">⭐ お気に入りに追加</button>
+      ${isNew ? '' : '<button class="btn danger" data-act="mealDelete">削除</button>'}
     </div>`);
   draft._isNew = isNew;
   renderMealItems();
@@ -783,6 +902,35 @@ function newMeal(fields) {
   return { id: uid(), date: mealDate, type: defaultMealType(), name: '', items: [], note: '', thumb: '', ...fields };
 }
 
+// ===================== 自転車のカードとシート =====================
+function rideCardHtml() {
+  const today = ridesOn(ymd());
+  const routes = S.settings.routes;
+  return `<div class="card"><h3>🚲 自転車での移動</h3>
+    ${today.length ? `<p class="small">今日 <b>${r1(today.reduce((a, r) => a + r.km, 0))}km</b>・約<b>${rideKcalOn(ymd())}kcal</b></p>
+      <ul class="list">${today.map(r => `<li><div class="grow small">${h(r.label || '自転車')} ${r1(r.km)}km・約${r.kcal}kcal</div>
+        <button class="icon-btn" data-act="rideDelete" data-id="${r.id}" aria-label="削除">✕</button></li>`).join('')}</ul>` : '<p class="muted">今日の記録はまだありません。</p>'}
+    ${routes.length ? `<div class="row wrap" style="margin:8px 0">${routes.map((r, i) => `<button class="btn sm" data-act="rideRoute" data-i="${i}">${h(r.name)} ${r1(r.round ? r.km * 2 : r.km)}km</button>`).join('')}</div>` : ''}
+    <button class="btn block" data-act="rideNew">＋ 距離を入れて記録</button>
+    <p class="muted">${rideWeekText()}</p>
+  </div>`;
+}
+function rideSheet() {
+  openSheet('自転車の移動を記録', `
+    <label class="field">日付${dateBox('id="r-date"', ymd())}</label>
+    <div class="grid2">
+      <label class="field">距離（km・片道）<input type="number" inputmode="decimal" id="r-km" data-in="ride" placeholder="例: 5"></label>
+      <label class="field">時間（分・任意）<input type="number" inputmode="numeric" id="r-min" data-in="ride" placeholder="空欄でOK"></label>
+    </div>
+    <label class="check"><input type="checkbox" id="r-round" data-in="ride">往復（距離と時間を2倍にする）</label>
+    <label class="field">自転車<select id="r-bike" data-in="ride">${BIKES.map(([v, l]) => `<option value="${v}" ${v === S.settings.bike ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <div class="hint small" id="r-preview">距離を入れると消費カロリーを計算します</div>
+    <label class="field">名前（任意。例: 自宅→ジム）<input id="r-name" placeholder="自宅→ジム"></label>
+    <label class="check"><input type="checkbox" id="r-keep">よく使うルートとして保存（次からホーム画面のボタン1つで記録）</label>
+    <p class="muted">距離はGoogleマップなどの「自転車」ルートで確認できます。時間が空欄のときは時速15km（ロードバイクは22km）として計算します。</p>
+    <button class="btn primary block" data-act="rideSave">記録する</button>`);
+}
+
 // ===================== 体データのシート =====================
 function bodySheet(b, isNew) {
   draft = structuredClone(b);
@@ -791,7 +939,7 @@ function bodySheet(b, isNew) {
   openSheet(isNew ? '測定結果を記録' : '測定結果を編集', `
     ${b.note ? `<div class="hint small">AIのメモ: ${h(b.note)}</div>` : ''}
     <div class="grid2">
-      <label class="field">日付<input type="date" id="b-date" value="${b.date}"></label>
+      <label class="field">日付${dateBox('id="b-date"', b.date)}</label>
       <label class="field">測った機械<select id="b-source">${Object.entries(SOURCES).map(([v, l]) => `<option value="${v}" ${v === b.source ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     </div>
     <div class="grid2">${shown.map(([k, l, u]) => `<label class="field">${l}${u ? `（${u}）` : ''}<input type="number" inputmode="decimal" id="b-${k}" value="${b[k] ?? ''}"></label>`).join('')}</div>
@@ -908,6 +1056,7 @@ ${profileText()}
 【なりたい体・目標】
 ${goalsText()}
 【使える器具】${equipmentText()}
+【ふだんの自転車移動】${rideWeekText()}
 【体の写真の分析】
 ${latestAnalysisText()}
 【種目ごとの実力（重さの単位はkg）】
@@ -935,21 +1084,39 @@ function kmemoPrompt(count) {
 function workoutSheet(w, isNew) {
   draft = structuredClone(w);
   draft._isNew = isNew;
+  draft.unit ||= S.settings.unit;
+  draft.cardio ||= [];
   const days = currentPlan().days;
+  const dayIdx = days.findIndex(d => d.name === w.dayName);
   openSheet(isNew ? 'トレーニングを記録' : '記録を編集', `
-    <div>
-      <label class="field">日付<input type="date" id="w-date" value="${w.date}"></label>
-      ${isNew ? `<label class="field">メニュー<select data-in="workoutDay">${days.map((d, i) => `<option value="${i}" ${d.name === w.dayName ? 'selected' : ''}>${h(d.name)}</option>`).join('')}</select></label>` : `<label class="field">メニュー<input value="${h(w.dayName)}" disabled></label>`}
-    </div>
+    <label class="field">日付${dateBox('id="w-date"', w.date)}</label>
+    ${isNew ? `<label class="field">メニュー<select data-in="workoutDay">${days.map((d, i) => `<option value="${i}" ${i === dayIdx ? 'selected' : ''}>${i + 1}日目 ${h(d.name)}</option>`).join('')}
+      <option value="-1" ${dayIdx < 0 ? 'selected' : ''}>有酸素運動だけ</option></select></label>` : `<p class="small"><b>${h(w.dayName)}</b></p>`}
+    <div class="spread" style="margin:6px 0"><span class="small">重さの単位</span>
+      <div class="seg" id="w-unit">${['kg', 'lb'].map(u => `<button class="${draft.unit === u ? 'on' : ''}" data-act="workoutUnit" data-u="${u}">${u}</button>`).join('')}</div></div>
     <div id="w-list"></div>
-    <div class="row" style="margin:8px 0 12px"><input id="w-newex" placeholder="種目を追加（例: ディップス）"><button class="btn sm" data-act="workoutAddEx">追加</button></div>
-    <button class="btn primary block" data-act="workoutSave">保存する</button>
+    <div class="row" style="margin:8px 0 16px"><input id="w-newex" placeholder="種目を追加（例: ディップス）"><button class="btn sm" data-act="workoutAddEx">追加</button></div>
+    <div class="cardio-box"><h4 style="margin-top:0">🏃 有酸素運動</h4><div id="w-cardio"></div>
+      <button class="btn sm" data-act="cardioAdd">＋ 有酸素運動を追加</button></div>
+    <button class="btn primary block" data-act="workoutSave" style="margin-top:14px">保存する</button>
     ${isNew ? '' : '<button class="btn danger block" data-act="workoutDelete" style="margin-top:8px">削除</button>'}`);
   renderWorkoutList();
+  renderCardio();
 }
+function renderCardio() {
+  $('#w-cardio').innerHTML = draft.cardio.map((c, ci) => `<div class="cardio-row">
+    <div class="spread"><select data-in="cardio" data-c="${ci}" data-k="type">${CARDIO_TYPES.map(t => `<option ${t === c.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <button class="icon-btn" data-act="cardioDel" data-c="${ci}" aria-label="削除">✕</button></div>
+    <div class="grid3">
+      <label class="field">時間（分）<input type="number" inputmode="numeric" data-in="cardio" data-c="${ci}" data-k="min" value="${c.min ?? ''}"></label>
+      <label class="field">距離 km<input type="number" inputmode="decimal" data-in="cardio" data-c="${ci}" data-k="km" value="${c.km ?? ''}" placeholder="任意"></label>
+      <label class="field">消費 kcal<input type="number" inputmode="numeric" data-in="cardio" data-c="${ci}" data-k="kcal" value="${c.kcal ?? ''}" placeholder="任意"></label>
+    </div></div>`).join('');
+}
+const weightLbNote = (w, u = S.settings.unit) => (u === 'lb' && /kg/i.test(w) && firstNum(w) ? `（約${toUnit(firstNum(w), 'lb')}lb）` : '');
 function workoutFromPlanDay(day, date = ymd()) {
   return {
-    id: uid(), date, dayName: day.name,
+    id: uid(), date, dayName: day.name, unit: S.settings.unit, cardio: [],
     exercises: day.exercises.map(e => {
       const last = lastPerf(e.name);
       const n = num(e.sets) || 3;
@@ -959,16 +1126,17 @@ function workoutFromPlanDay(day, date = ymd()) {
   };
 }
 function renderWorkoutList() {
+  const u = draft.unit;
   $('#w-list').innerHTML = draft.exercises.map((e, ei) => {
     const last = lastPerf(e.name, draft.id);
-    const hint = overloadHint(e, last);
+    const hint = overloadHint(e, last, u);
     return `<div class="ex">
       <div class="spread"><div class="ex-name">${h(e.name)}</div><button class="icon-btn" data-act="workoutDelEx" data-e="${ei}" aria-label="種目を削除">✕</button></div>
-      <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}${e.weight ? ` ・ ${h(e.weight)}` : ''}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets))}` : '前回の記録なし'}</span></div>
+      <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}${e.weight ? ` ・ ${h(e.weight)}${weightLbNote(e.weight, u)}` : ''}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets, u))}` : '前回の記録なし'}</span></div>
       ${hint ? `<div class="hint small">${h(hint)}</div>` : ''}
-      <table class="sets"><tr><th>セット</th><th>重さ kg</th><th>回数</th><th></th></tr>
+      <table class="sets"><tr><th>セット</th><th>重さ ${u}</th><th>回数</th><th></th></tr>
         ${e.sets.map((s, si) => `<tr><td>${si + 1}</td>
-          <td><input type="number" inputmode="decimal" data-in="wset" data-e="${ei}" data-s="${si}" data-k="w" value="${s.w ?? ''}"></td>
+          <td><input type="number" inputmode="decimal" data-in="wset" data-e="${ei}" data-s="${si}" data-k="w" value="${toUnit(num(s.w), u) ?? ''}"></td>
           <td><input type="number" inputmode="numeric" data-in="wset" data-e="${ei}" data-s="${si}" data-k="r" value="${s.r ?? ''}" placeholder="${h(String(e.reps || '').split(/[-〜~]/).pop())}"></td>
           <td><button class="icon-btn" data-act="workoutDelSet" data-e="${ei}" data-s="${si}" aria-label="セットを削除">−</button></td></tr>`).join('')}
       </table>
@@ -981,6 +1149,7 @@ function renderWorkoutList() {
 const ACT = {
   go: el => { tab = el.dataset.tab; render(); },
   closeSheet,
+  aiCancel: () => aiCtrl?.abort(),
 
   // ---- 食事 ----
   mealDay: el => { mealDate = addDays(mealDate, +el.dataset.d); render(); },
@@ -990,14 +1159,14 @@ const ACT = {
     const img = await fileToJpeg(file, 1280);
     const thumb = await resizeImage(img, 360, 0.7);
     const hint = prompt('補足があれば入力（例: ご飯は半分残した / コンビニのサラダチキン）。無ければそのままOK', '') ?? '';
-    const r = await runAI('AIが食事を分析中…', () => gemini(mealPhotoPrompt(hint), [img]));
+    const r = await runAI('AIが食事を分析中…', sig => gemini(mealPhotoPrompt(hint), [img], sig), 'meal');
     if (!r) return;
     mealSheet(newMeal({ ...normalizeMeal(r), thumb }), true);
   },
   async mealText() {
     const text = prompt('食べたものを入力してください\n（例: 牛丼並盛と味噌汁、ゆで卵1個）', '');
     if (!text?.trim()) return;
-    const r = await runAI('AIが計算中…', () => gemini(mealTextPrompt(text)));
+    const r = await runAI('AIが計算中…', sig => gemini(mealTextPrompt(text), [], sig), 'text');
     if (!r) return;
     mealSheet(newMeal(normalizeMeal(r)), true);
   },
@@ -1086,7 +1255,7 @@ const ACT = {
     try { imgs = await filesToImages(files); }
     catch (e) { alert(e.message || '画像を読み込めませんでした'); return; }
     finally { busy(false); }
-    const r = await runAI('AIが数値を読み取り中…', () => gemini(bodyReadPrompt(src, imgs.length), imgs));
+    const r = await runAI('AIが数値を読み取り中…', sig => gemini(bodyReadPrompt(src, imgs.length), imgs, sig), 'body', imgs.length);
     if (!r) return;
     const b = { id: uid(), source: src, date: /^\d{4}-\d{2}-\d{2}$/.test(r.date || '') ? r.date : ymd(), note: r.note || '', extra: r.extra || {} };
     for (const [k] of BODY_FIELDS) b[k] = num(r[k]);
@@ -1146,7 +1315,7 @@ const ACT = {
     const chosen = SLOTS.filter(([k]) => draft.photos[k]);
     if (!chosen.length) { alert('写真を1枚以上選んでください'); return; }
     const imgs = chosen.map(([k]) => draft.photos[k]);
-    const r = await runAI('AIが体を分析中…\n（少し時間がかかります）', () => gemini(analyzePrompt(chosen.map(c => c[1])), imgs));
+    const r = await runAI('AIが体を分析中…\n（少し時間がかかります）', sig => gemini(analyzePrompt(chosen.map(c => c[1])), imgs, sig), 'analyze', imgs.length);
     if (!r) return;
     const photos = await Promise.all(imgs.map(i => resizeImage(i, 400, 0.7)));
     const a = { id: uid(), date: ymd(), photos, result: r };
@@ -1172,7 +1341,7 @@ const ACT = {
 
   // ---- トレーニング ----
   async planAI() {
-    const r = await runAI('AIがメニューを作成中…\n（少し時間がかかります）', () => gemini(planPrompt()));
+    const r = await runAI('AIがメニューを作成中…\n（少し時間がかかります）', sig => gemini(planPrompt(), [], sig), 'plan');
     if (!r?.days?.length) return;
     S.plan = {
       source: 'ai', createdAt: ymd(),
@@ -1209,7 +1378,7 @@ const ACT = {
     try { imgs = await filesToImages(files, 1600, 24, 30); }
     catch (e) { alert(e.message || '画像を読み込めませんでした'); return; }
     finally { busy(false); }
-    const r = await runAI('AIがトレーニング記録を読み取り中…\n（少し時間がかかります）', () => gemini(kmemoPrompt(imgs.length), imgs));
+    const r = await runAI('AIがトレーニング記録を読み取り中…\n（少し時間がかかります）', sig => gemini(kmemoPrompt(imgs.length), imgs, sig), 'kmemo', imgs.length);
     if (!r) return;
     const sessions = (r.sessions || []).map(x => ({
       date: /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : null,
@@ -1232,8 +1401,7 @@ const ACT = {
       <p class="small">${draft.fresh.length}回分の記録を読み取りました。内容を確認してください（間違いはあとで記録一覧から直せます）。</p>
       ${draft.fresh.map(w => `<div class="ex"><div class="ex-name">${jpDate(w.date)}${w.dayName.includes('不明') ? ' <span class="tag">日付不明</span>' : ''}</div>
         ${w.exercises.map(e => `<div class="small">${h(e.name)}：<span class="muted">${h(setsText(e.sets))}</span></div>`).join('')}</div>`).join('')}
-      <button class="btn primary block" data-act="kmemoSave" style="margin-top:12px">取り込む</button>
-      <button class="btn block" data-act="closeSheet" style="margin-top:8px">やめる</button>`);
+      <button class="btn primary block" data-act="kmemoSave" style="margin-top:12px">取り込む</button>`);
   },
   async kmemoSave() {
     const n = draft.fresh.length;
@@ -1244,6 +1412,15 @@ const ACT = {
     if (confirm(`${n}回分を取り込みました。\nこの記録をもとに、AIで重さ入りのメニューを作りますか？`)) ACT.planAI();
   },
   startWorkout: () => workoutSheet(workoutFromPlanDay(nextPlanDay()), true),
+  startDay: el => workoutSheet(workoutFromPlanDay(currentPlan().days[+el.dataset.i]), true),
+  startCardio: () => workoutSheet({ id: uid(), date: ymd(), dayName: '有酸素運動', unit: S.settings.unit, exercises: [], cardio: [{ type: CARDIO_TYPES[0], min: null }] }, true),
+  workoutUnit(el) {
+    draft.unit = el.dataset.u;
+    $$('#w-unit button').forEach(b => b.classList.toggle('on', b.dataset.u === draft.unit));
+    renderWorkoutList();
+  },
+  cardioAdd: () => { draft.cardio.push({ type: draft.cardio.at(-1)?.type || CARDIO_TYPES[0], min: null }); renderCardio(); },
+  cardioDel: el => { draft.cardio.splice(+el.dataset.c, 1); renderCardio(); },
   workoutEdit: el => workoutSheet(S.workouts.find(w => w.id === el.dataset.id), false),
   workoutAddEx() {
     const name = $('#w-newex').value.trim();
@@ -1264,7 +1441,8 @@ const ACT = {
     const w = { ...draft, date: $('#w-date').value || ymd() };
     delete w._isNew;
     w.exercises = w.exercises.map(e => ({ ...e, sets: e.sets.filter(s => num(s.r) != null) })).filter(e => e.sets.length);
-    if (!w.exercises.length) { alert('回数を入れたセットがありません。やった回数を入れてから保存してください。'); return; }
+    w.cardio = (w.cardio || []).filter(c => num(c.min) > 0);
+    if (!w.exercises.length && !w.cardio.length) { alert('記録する内容がありません。筋トレは「回数」、有酸素運動は「時間」を入れてから保存してください。'); return; }
     if (draft._isNew) { w.created = Date.now(); S.workouts.push(w); }
     else S.workouts = S.workouts.map(x => (x.id === w.id ? w : x));
     await save('workouts');
@@ -1280,9 +1458,56 @@ const ACT = {
     render();
   },
 
+  // ---- 自転車 ----
+  rideNew: () => rideSheet(),
+  async rideRoute(el) {
+    const r = S.settings.routes[+el.dataset.i];
+    const km = r.round ? r.km * 2 : r.km;
+    const ride = { id: uid(), date: ymd(), km, min: null, bike: S.settings.bike, label: r.name + (r.round ? '（往復）' : ''), created: Date.now() };
+    ride.kcal = rideKcal(km, null, ride.bike);
+    S.rides.push(ride);
+    await save('rides');
+    toast(`${ride.label} ${r1(km)}km・約${ride.kcal}kcal を記録しました`);
+    render();
+  },
+  async rideDelete(el) {
+    const r = S.rides.find(x => x.id === el.dataset.id);
+    if (!confirm(`${r.label || '自転車'} ${r1(r.km)}km の記録を削除しますか？`)) return;
+    S.rides = S.rides.filter(x => x.id !== r.id);
+    await save('rides');
+    render();
+  },
+  async rideSave() {
+    const km0 = num($('#r-km').value);
+    if (!km0) { alert('距離を入れてください'); return; }
+    const round = $('#r-round').checked;
+    const km = round ? km0 * 2 : km0;
+    const min = num($('#r-min').value);
+    const bike = $('#r-bike').value;
+    const name = $('#r-name').value.trim();
+    const ride = { id: uid(), date: $('#r-date').value || ymd(), km, min: min ? (round ? min * 2 : min) : null, bike, label: (name || '自転車') + (round ? '（往復）' : ''), created: Date.now() };
+    ride.kcal = rideKcal(ride.km, ride.min, bike);
+    S.rides.push(ride);
+    await save('rides');
+    if ($('#r-keep').checked && name) {
+      S.settings.routes.push({ name, km: km0, round });
+      await save('settings');
+    }
+    closeSheet();
+    toast(`${r1(km)}km・約${ride.kcal}kcal を記録しました`);
+    render();
+  },
+  async routeDelete(el) {
+    const r = S.settings.routes[+el.dataset.i];
+    if (!confirm(`ルート「${r.name}」を一覧から外しますか？（これまでの記録は消えません）`)) return;
+    S.settings.routes.splice(+el.dataset.i, 1);
+    await save('settings');
+    render();
+  },
+
   // ---- 設定 ----
   async testKey() {
-    const r = await runAI('接続テスト中…', () => gemini('{"ok":true} というJSONだけを返してください。'));
+    const r = await runAI('接続テスト中…', sig => gemini('{"ok":true} というJSONだけを返してください。', [], sig), 'test');
     if (r) alert('接続できました！写真のAI分析が使えます。');
   },
   exportData() {
@@ -1319,20 +1544,32 @@ const ACT = {
 };
 
 const INPUT = {
+  ride() {
+    const km0 = num($('#r-km').value), min0 = num($('#r-min').value), round = $('#r-round').checked;
+    const k = round ? 2 : 1;
+    $('#r-preview').innerHTML = km0 ? `消費カロリー: <b>約${rideKcal(km0 * k, min0 ? min0 * k : null, $('#r-bike').value)} kcal</b>（${r1(km0 * k)}km）` : '距離を入れると消費カロリーを計算します';
+  },
   mealItem(el) {
     const it = draft.items[+el.dataset.i];
     it[el.dataset.k] = el.dataset.k === 'name' ? el.value : num(el.value) || 0;
     renderMealTotal();
   },
   wset(el) {
-    draft.exercises[+el.dataset.e].sets[+el.dataset.s][el.dataset.k] = num(el.value);
+    const v = num(el.value);
+    draft.exercises[+el.dataset.e].sets[+el.dataset.s][el.dataset.k] = el.dataset.k === 'w' ? fromUnit(v, draft.unit) : v;
+  },
+  cardio(el) {
+    draft.cardio[+el.dataset.c][el.dataset.k] = el.dataset.k === 'type' ? el.value : num(el.value);
   },
   workoutDay(el) {
-    const date = $('#w-date').value;
-    const day = currentPlan().days[+el.value];
-    const w = workoutFromPlanDay(day, date);
-    draft = { ...w, _isNew: true };
+    const i = +el.value;
+    const keep = { id: draft.id, unit: draft.unit, cardio: draft.cardio, _isNew: true };
+    draft = i < 0
+      ? { ...keep, date: ymd(), dayName: '有酸素運動', exercises: [] }
+      : { ...workoutFromPlanDay(currentPlan().days[i]), ...keep };
+    if (i < 0 && !draft.cardio.length) draft.cardio.push({ type: CARDIO_TYPES[0], min: null });
     renderWorkoutList();
+    renderCardio();
   },
 };
 
@@ -1366,13 +1603,18 @@ document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
   if (el && ACT[el.dataset.act]) { e.preventDefault(); ACT[el.dataset.act](el, e); }
 });
+function syncDateBox(e) {
+  if (e.target.matches?.('.datebox input')) e.target.previousElementSibling.textContent = e.target.value ? ymdText(e.target.value) : '日付を選ぶ';
+}
 document.addEventListener('input', e => {
+  syncDateBox(e);
   const el = e.target.closest('[data-in]');
   if (el && el.tagName !== 'SELECT' && INPUT[el.dataset.in]) INPUT[el.dataset.in](el, e);
 });
 document.addEventListener('change', e => {
+  syncDateBox(e);
   const el = e.target;
-  if (el.matches('select[data-in]') && INPUT[el.dataset.in]) INPUT[el.dataset.in](el, e);
+  if (el.matches('select[data-in], input[type=checkbox][data-in]') && INPUT[el.dataset.in]) INPUT[el.dataset.in](el, e);
   if (el.matches('[data-set], [data-eq]')) onSettingChange(el);
 });
 
