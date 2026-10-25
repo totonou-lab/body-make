@@ -874,6 +874,96 @@ function latestAnalysisText() {
   return `${a.date}の分析: ${r.overall}\n足りない部位: ${(r.weakPoints || []).map(w => `${w.part}（${w.detail}）`).join('、')}\n重点: ${(r.trainingFocus || []).join('、')}`;
 }
 
+// ===================== 続けるためのコメント =====================
+// 心理の考え方: 小さな達成を認める / 前回の自分と比べる / 「全部かゼロか」にしない / 次の予定を具体的に決める
+function weekStartOf(s) { const d = parseYmd(s); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return ymd(d); }
+const weekCount = ws => new Set(strengthWorkouts().filter(w => weekStartOf(w.date) === ws).map(w => w.date)).size;
+const weekTarget = () => num(S.settings.daysPerWeek) || 3;
+function weekStreak() {
+  let k = 0, ws = addDays(weekStartOf(ymd()), -7);
+  while (k < 52 && weekCount(ws) >= weekTarget()) { k++; ws = addDays(ws, -7); }
+  return k;
+}
+function mealStreak() {
+  let n = 0, d = mealsOn(ymd()).length ? ymd() : addDays(ymd(), -1);
+  while (n < 365 && mealsOn(d).length) { n++; d = addDays(d, -1); }
+  return n;
+}
+// 毎日同じ言い回しにならないよう、日付で言い回しを選ぶ
+function pick(key, arr) {
+  let x = 0;
+  for (const ch of ymd() + key) x = (x * 31 + ch.charCodeAt(0)) >>> 0;
+  return arr[x % arr.length];
+}
+function coachMessages() {
+  const out = [];
+  const add = (pri, icon, text) => out.push({ pri, icon, text });
+  const sw = strengthWorkouts(), last = sw.at(-1), target = weekTarget();
+  const done = weekCount(weekStartOf(ymd())), streak = weekStreak();
+  const ts = trainStatus();
+  if (!sw.length) add(9, '💡', '最初の1回は「30分・フォーム重視」でも十分です。まずは「ジムに行く」ことを習慣にするのが最初のゴール。');
+  else {
+    const gap = -daysUntil(last.date);
+    if (gap > sessionGap() + 3) add(9, '🌱', `前回から${gap}日空きました。間が空いても大丈夫、大事なのは次の1回です。今日は「30分・フォーム重視」で体を慣らすだけでもOK。`);
+    if (done >= target) add(8, '🎉', `今週は目標の${target}回を達成！${streak ? `${streak + 1}週連続です。` : ''}${pick('wk', ['この調子でいきましょう。', '続けている自分を誇っていいです。', '体は確実に変わり始めています。'])}`);
+    else if (ts.state === 'done') add(7, '👏', pick('td', ['今日もジムに行けました。行動した自分をしっかり認めましょう。', '今日のがんばりは、確実に体に残っています。', 'やると決めた日にやれた。それが一番の才能です。']) + `（今週${done}/${target}回）`);
+    else {
+      const left = 7 - (new Date().getDay() + 6) % 7;
+      if (target - done <= left) add(4, '📅', `今週はあと${target - done}回。次は${jpDate(ts.nextAt.date)}がおすすめ。行く日と時間を先に決めておくと、迷わず続けられます。`);
+    }
+    if (streak >= 2 && done < target) add(5, '🔥', `${streak}週連続で目標達成中。今週もつなげましょう。`);
+  }
+  const ms = mealStreak();
+  if (ms >= 2) add(5, '🍚', `食事の記録が${ms}日連続。${pick('ms', ['記録するだけで、食べ方は自然と整っていきます。', '続けていること自体が、もう成果です。', '自分の食事が見えるようになると、迷いが減ります。'])}`);
+  if (!mealsOn(ymd()).length && new Date().getHours() >= 13) add(3, '📷', '今日の食事はまだ記録がありません。完璧じゃなくていいので、写真を1枚だけ撮ってみましょう。');
+  const t = targets();
+  if (t) {
+    const days = Array.from({ length: 7 }, (_, i) => addDays(ymd(), -(i + 1))).filter(d => mealsOn(d).length);
+    const ok = days.filter(d => dayTotals(d).protein >= t.protein * 0.9).length;
+    if (days.length >= 3 && ok >= days.length - 1) add(4, '💪', `たんぱく質はこの${days.length}日で${ok}日達成。筋肉づくりの土台ができています。`);
+    else if (days.length >= 3 && ok <= days.length / 3) add(4, '🥚', 'たんぱく質が足りない日が多めです。まずは1食に1品、卵・納豆・サラダチキンなどを足すだけでOK。');
+    const y = addDays(ymd(), -1);
+    if (mealsOn(y).length && dayTotals(y).kcal > targetsOn(y).kcal * 1.15) add(5, '🙆', '昨日は少し食べすぎでも大丈夫。1日で体脂肪はほとんど変わりません。今日いつも通りに戻せば問題なしです。');
+  }
+  const ib = sortedBody().filter(b => b.source === 'inbody');
+  if (ib.length >= 2) {
+    const f = ib[0], l = ib.at(-1);
+    const dfat = num(f.fatPct) - num(l.fatPct), dsm = num(l.skeletalMuscle) - num(f.skeletalMuscle);
+    if (dfat >= 0.5) add(6, '📉', `体脂肪率は${jpDate(f.date)}から${r1(dfat)}%ダウン${dsm >= 0.3 ? `、骨格筋量は${r1(dsm)}kgアップ` : ''}。毎日の積み重ねが、ちゃんと数字に出ています。`);
+  }
+  const ws = sortedBody().filter(b => num(b.weight) != null).slice(-2);
+  if (ws.length === 2 && Math.abs(num(ws[1].weight) - num(ws[0].weight)) >= 1) add(3, '⚖️', '体重は水分などで1日に1〜2kg上下します。一喜一憂せず、週の流れで見ましょう。');
+  return out.sort((a, b) => b.pri - a.pri).slice(0, 3);
+}
+// トレーニングを保存した直後のコメント
+function workoutPraise(w) {
+  const lines = [];
+  const sw = strengthWorkouts();
+  if (sw.length === 1) lines.push('🎉 記念すべき最初の1回！始めた人だけが変われます。');
+  const others = sw.filter(x => x.id !== w.id);
+  let n = 0;
+  for (const e of w.exercises) {
+    if (n >= 2) break;
+    const cur = Math.max(0, ...e.sets.map(e1rm));
+    const prev = Math.max(0, ...others.flatMap(x => x.exercises.filter(y => normName(y.name) === normName(e.name)).flatMap(y => y.sets.map(e1rm))));
+    const last = lastPerf(e.name, w.id);
+    const topNow = Math.max(0, ...e.sets.map(s => num(s.w) || 0)), topLast = last ? Math.max(0, ...last.sets.map(s => num(s.w) || 0)) : 0;
+    if (prev > 0 && cur > prev * 1.001) { lines.push(`🏆 ${e.name}で自己ベスト更新（推定最大 ${r1(cur)}kg）！`); n++; }
+    else if (topLast > 0 && topNow > topLast) { lines.push(`📈 ${e.name}：前回より +${r1(topNow - topLast)}kg。成長しています。`); n++; }
+  }
+  const day = currentPlan().days.find(d => d.name === w.dayName);
+  if (day && day.exercises.length && w.exercises.length >= adjustDay(day).exercises.length) lines.push('✅ メニューを最後までやり切りました。');
+  const t = todayInput();
+  if (t.minutes < (num(S.settings.weightMin) || 60)) lines.push('⏱ 時間が少ない日でもジムに来たことが一番えらい。「ゼロの日」を作らないことが習慣を作ります。');
+  if (t.cond === 'tired' || t.cond === 'form') lines.push('🧘 体調に合わせて軽めにできたのも立派な判断。それが長く続けるためのいちばん賢いやり方です。');
+  const done = weekCount(weekStartOf(w.date)), target = weekTarget();
+  lines.push(done >= target ? `🎉 今週${done}回目で、週${target}回の目標を達成！` : `📊 今週${done}回目（目標は週${target}回）。`);
+  const ts = trainStatus();
+  lines.push(`📅 次は <b>${jpDate(ts.nextAt.date)}</b>（${menuLabel(ts.next)}）がおすすめ。「何曜日の何時に行く」まで決めておくと、続けやすくなります。`);
+  lines.push(pick('cl', ['今日はたんぱく質をしっかりとって、よく眠りましょう。', '筋肉は休んでいる間に育ちます。今夜はゆっくり休んでください。', 'トレーニング後の食事はご飯もしっかり。回復が早くなります。']));
+  return lines;
+}
+
 // ===================== 画面の切り替え =====================
 let tab = 'home';
 let mealDate = ymd();
@@ -908,34 +998,51 @@ const VIEWS = {
       html += `<div class="notice"><b>はじめに設定をしましょう</b><br>${!st.apiKey ? '・写真のAI分析に使う「APIキー」<br>' : ''}${!st.profile.sex || !st.profile.height ? '・性別と身長（カロリー計算に使います）<br>' : ''}
         <button class="btn sm" data-act="go" data-tab="settings" style="margin-top:6px">設定を開く</button></div>`;
     }
-    html += `<div class="btn-grid">
-      <button class="btn primary" data-act="mealPhoto">📷 食事を撮る</button>
-      <button class="btn" data-act="mealText">✏️ 食事を文字で</button>
-      <button class="btn" data-act="bodyQuick">⚖️ 体重を記録</button>
-      <button class="btn" data-act="startWorkout">🏋️ トレーニング</button>
-    </div>`;
-    html += `<div class="card"><h3>今日の食事</h3>
+    const coach = coachMessages();
+    if (coach.length) html += `<div class="card coach"><h3>💬 今日のひとこと</h3>${coach.map(c => `<p class="small">${c.icon} ${c.text}</p>`).join('')}</div>`;
+    // 食事
+    html += `<div class="card sec">${secHead('🍚', '食事', 'meals')}
       ${t ? bar('カロリー', tot.kcal, t.kcal, 'kcal') + bar('たんぱく質', tot.protein, t.protein, 'g')
         : '<p class="muted">体重を一度記録すると、1日の目標カロリーが出ます。</p>'}
       ${t ? `<p class="muted">あと ${r0(Math.max(0, t.kcal - tot.kcal))} kcal・たんぱく質 ${r0(Math.max(0, t.protein - tot.protein))} g${t.extra ? `（${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} を目標に足しています）` : ''}</p>` : ''}
-    </div>`;
-    html += rideCardHtml();
-    html += `<div class="card"><h3>目標</h3><ul class="plain">${st.goals.map(x => `<li>${h(x)}</li>`).join('')}</ul>
-      ${g ? absGuideHtml(g) : '<p class="muted">性別と体脂肪率が入ると、腹筋が見えるまでの目安を出します。</p>'}</div>`;
-    html += `<div class="card"><h3>体の最新データ</h3>${b ? `
-      <div class="grid3">
+      <div class="grid3 sec-btns">
+        <button class="btn primary" data-act="mealPhoto">📷 撮る</button>
+        <button class="btn" data-act="mealText">✏️ 文字で</button>
+        <button class="btn" data-act="shareNew">🍻 会食</button>
+      </div></div>`;
+    // 体
+    const ib = sortedBody().filter(x => x.source === 'inbody');
+    const diff = (k, u) => { const v = num(ib.at(-1)[k]) - num(ib[0][k]); return Number.isFinite(v) ? `${v > 0 ? '+' : v < 0 ? '−' : '±'}${r1(Math.abs(v))}${u}` : '-'; };
+    html += `<div class="card sec">${secHead('⚖️', '体', 'body')}
+      ${b ? `<div class="grid3">
         <div class="stat"><b>${r1(num(b.weight))}</b><span>体重 kg</span></div>
         <div class="stat"><b>${r1(num(b.fatPct))}</b><span>体脂肪率 %</span></div>
         <div class="stat"><b>${r1(num(b.skeletalMuscle ?? b.muscle))}</b><span>${b.skeletalMuscle != null ? '骨格筋量' : '筋肉量'} kg</span></div>
-      </div><p class="muted">${jpDate(b.date)}・${SOURCES[b.source] || ''}</p>` : '<p class="muted">まだ記録がありません。</p>'}</div>`;
+      </div><p class="muted" style="text-align:center">${jpDate(b.date)}・${SOURCES[b.source] || ''}</p>` : '<p class="muted">まだ記録がありません。</p>'}
+      ${ib.length >= 2 ? `<div class="hint small">InBody ${jpDate(ib[0].date)}から：体重 <b>${diff('weight', 'kg')}</b>・体脂肪率 <b>${diff('fatPct', '%')}</b>・骨格筋量 <b>${diff('skeletalMuscle', 'kg')}</b></div>
+        <p class="small chart-title">体重（InBody）</p>${lineChart(ib.slice(-20).filter(x => num(x.weight) != null).map(x => ({ d: x.date, y: num(x.weight) })), 'kg', 'var(--accent)')}
+        <p class="small chart-title">体脂肪率（InBody）</p>${lineChart(ib.slice(-20).filter(x => num(x.fatPct) != null).map(x => ({ d: x.date, y: num(x.fatPct) })), '%', 'var(--chart2)')}` : ''}
+      <div class="grid2 sec-btns">
+        <button class="btn" data-act="bodyQuick">⚖️ 体重を記録</button>
+        <button class="btn" data-act="bodyReadPhoto" data-src="inbody">📱 InBody</button>
+      </div></div>`;
+    // トレーニング
     const ts = trainStatus();
-    html += `<div class="card"><h3>トレーニング</h3>
-      ${ts.state === 'go' ? `<p class="small">💪 今日のメニュー：<b>${menuLabel(ts.today)} ${h(dayTitle(ts.today))}</b></p>
-        <button class="btn primary block" data-act="startWorkout">今日のメニューで記録を始める</button>`
-      : `<p class="small">${ts.state === 'done' ? '✅ 今日はトレーニング済み。' : '🛌 今日は休養日。'}体を休ませて超回復を待ちましょう。</p>
-        <p class="small">📅 次回：<b>${jpDate(ts.nextAt.date)}</b> に ${menuLabel(ts.next)} ${h(dayTitle(ts.next))}</p>
-        <button class="btn block" data-act="go" data-tab="train">メニューを見る</button>`}
-      ${lastW ? `<p class="muted">前回: ${jpDate(lastW.date)} ${h(lastW.dayName)}</p>` : ''}</div>`;
+    html += `<div class="card sec">${secHead('🏋️', 'トレーニング', 'train')}
+      ${ts.state === 'go' ? `<p class="small">💪 今日のメニュー：<b>${menuLabel(ts.today)} ${h(dayTitle(ts.today))}</b></p>`
+      : `<p class="small">${ts.state === 'done' ? '✅ 今日はトレーニング済み。' : '🛌 今日は休養日。'}体を休ませて超回復を待ちましょう。</p>`}
+      <p class="small">📅 次回：<b>${jpDate(ts.nextAt.date)}</b> に ${menuLabel(ts.next)} ${h(dayTitle(ts.next))}</p>
+      <p class="muted">今週 ${weekCount(weekStartOf(ymd()))}/${weekTarget()}回${lastW ? ` ・ 前回 ${jpDate(lastW.date)}` : ''}</p>
+      <div class="grid2 sec-btns">
+        <button class="btn ${ts.state === 'go' ? 'primary' : ''}" data-act="startWorkout">🏋️ 記録する</button>
+        <button class="btn" data-act="go" data-tab="train">メニューを見る</button>
+      </div></div>`;
+    // 移動・有酸素
+    html += rideCardHtml();
+    // 目標
+    html += `<div class="card"><h3>🎯 目標</h3><ul class="plain small">${st.goals.map(x => `<li>${h(x)}</li>`).join('')}</ul>
+      <p class="muted">期限：${ymdText(targetDate())}（あと${daysUntil(targetDate())}日）</p>
+      ${g ? absGuideHtml(g) : ''}</div>`;
     return html;
   },
 
@@ -1153,6 +1260,7 @@ const VIEWS = {
   },
 };
 
+const secHead = (icon, title, tabName) => `<div class="sec-head"><h3>${icon} ${title}</h3><button class="link-btn" data-act="go" data-tab="${tabName}">くわしく ›</button></div>`;
 function bar(label, val, target, unit) {
   const pct = target ? Math.min(100, (val / target) * 100) : 0;
   const over = target && val > target * 1.05;
@@ -1357,7 +1465,7 @@ function watchPrompt(count) {
 function rideCardHtml() {
   const today = ridesOn(ymd());
   const routes = S.settings.routes;
-  return `<div class="card"><h3>🚲 自転車での移動</h3>
+  return `<div class="card sec"><div class="sec-head"><h3>🚲 移動・有酸素</h3></div>
     ${today.length ? `<p class="small">今日 <b>${r1(today.reduce((a, r) => a + r.km, 0))}km</b>・約<b>${rideKcalOn(ymd())}kcal</b></p>
       <ul class="list">${today.map(r => `<li><div class="grow small">${h(r.label || '自転車')} ${r1(r.km)}km・約${r.kcal}kcal</div>
         <button class="icon-btn" data-act="rideDelete" data-id="${r.id}" aria-label="削除">✕</button></li>`).join('')}</ul>` : '<p class="muted">今日の記録はまだありません。</p>'}
@@ -1620,6 +1728,7 @@ function workoutSheet(w, isNew) {
       <option value="-1" ${dayIdx < 0 ? 'selected' : ''}>有酸素運動だけ</option></select></label>` : `<p class="small"><b>${h(w.dayName)}</b></p>`}
     <div class="spread" style="margin:6px 0"><span class="small">重さの単位</span>
       <div class="seg" id="w-unit">${['kg', 'lb'].map(u => `<button class="${draft.unit === u ? 'on' : ''}" data-act="workoutUnit" data-u="${u}">${u}</button>`).join('')}</div></div>
+    <button class="btn block" data-act="workoutImage" style="margin:4px 0 8px">📷 筋トレメモの画面から入力</button>
     <div id="w-list"></div>
     <div class="row" style="margin:8px 0 16px"><input id="w-newex" placeholder="種目を追加（例: ディップス）"><button class="btn sm" data-act="workoutAddEx">追加</button></div>
     <div class="cardio-box"><h4 style="margin-top:0">🏃 有酸素運動</h4><div id="w-cardio"></div>
@@ -1770,7 +1879,8 @@ const ACT = {
     await save('meals');
     mealDate = m.date;
     closeSheet();
-    toast(`保存しました（${r0(m.kcal)} kcal）`);
+    const streak = m.date === ymd() && mealsOn(ymd()).length === 1 ? mealStreak() : 0;
+    toast(streak >= 2 ? `保存しました！食事の記録 ${streak}日連続です 🔥` : `保存しました（${r0(m.kcal)} kcal）`);
     render();
   },
   async mealDelete() {
@@ -2036,7 +2146,34 @@ const ACT = {
     renderWorkoutList();
   },
   workoutDelSet: el => { draft.exercises[+el.dataset.e].sets.splice(+el.dataset.s, 1); renderWorkoutList(); },
+  async workoutImage() {
+    const files = await pickPhotos(true, 'image/*,video/*');
+    if (!files.length) return;
+    let imgs;
+    busy(true, '画像を準備中…');
+    try { imgs = await filesToImages(files, 1600, 12, 12); }
+    catch (e) { alert(e.message || '画像を読み込めませんでした'); return; }
+    finally { busy(false); }
+    const r = await runAI('AIが記録を読み取り中…', sig => gemini(kmemoPrompt(imgs.length), imgs, sig), 'kmemo', imgs.length);
+    if (!r) return;
+    const sessions = (r.sessions || []).filter(x => x.exercises?.length);
+    if (!sessions.length) { alert('トレーニング記録を読み取れませんでした。種目・重さ・回数が見える画面で試してください。'); return; }
+    // 記録の日付と同じ日 → 無ければ一番新しい日の記録を使う
+    const date = $('#w-date').value || ymd();
+    const sess = sessions.find(x => x.date === date) || [...sessions].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
+    let updated = 0, added = 0;
+    for (const e of sess.exercises) {
+      const sets = (e.sets || []).map(t => ({ w: num(t.w) ?? 0, r: num(t.r) })).filter(t => t.r != null);
+      if (!e.name || !sets.length) continue;
+      const hit = draft.exercises.find(x => x.name === e.name) || draft.exercises.find(x => normName(x.name) === normName(e.name));
+      if (hit) { hit.sets = sets; updated++; }
+      else { draft.exercises.push({ name: String(e.name), reps: '', target: '', sets }); added++; }
+    }
+    renderWorkoutList();
+    toast(`読み取りました（${updated}種目を入力・${added}種目を追加）`);
+  },
   async workoutSave() {
+    const isNew = draft._isNew;
     const w = { ...draft, date: $('#w-date').value || ymd() };
     delete w._isNew;
     w.exercises = w.exercises.map(e => ({ ...e, sets: e.sets.filter(s => num(s.r) != null) })).filter(e => e.sets.length);
@@ -2046,8 +2183,10 @@ const ACT = {
     else S.workouts = S.workouts.map(x => (x.id === w.id ? w : x));
     await save('workouts');
     closeSheet();
-    toast('おつかれさまでした！記録しました');
     render();
+    if (w.exercises.length && isNew) {
+      openSheet('💪 おつかれさまでした！', `<div class="praise">${workoutPraise(w).map(l => `<p>${l}</p>`).join('')}</div>`);
+    } else toast('おつかれさまでした！記録しました');
   },
   async workoutDelete() {
     if (!confirm('このトレーニング記録を削除しますか？')) return;

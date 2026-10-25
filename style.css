@@ -245,6 +245,15 @@ details summary { cursor: pointer; color: var(--accent); font-weight: 600; paddi
 .stepper .btn.sm { min-width: 40px; }
 .drink-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
 #share-body .seg { margin: 4px 0; }
+.sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.sec-head h3 { margin: 0; font-size: 17px; }
+.link-btn { border: 0; background: none; color: var(--accent); font: inherit; font-size: 13px; font-weight: 600; padding: 6px 0 6px 10px; }
+.sec-btns { margin-top: 10px; }
+.sec-btns .btn { padding: 8px 6px; font-size: 14px; }
+.coach { background: var(--accent-soft); border-color: transparent; }
+.coach p { margin: 6px 0; }
+.chart-title { margin: 10px 0 0; color: var(--sub); }
+.praise p { margin: 10px 0; font-size: 15px; }
 .spinner { width: 44px; height: 44px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
