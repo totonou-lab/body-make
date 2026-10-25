@@ -26,6 +26,13 @@ const BODY_FIELDS = [
 
 const CARDIO_TYPES = ['ランニング（屋外）', 'ウォーキング（屋外）', 'トレッドミル（ウォーキング・ランニング）', 'エアロバイク', 'クロストレーナー', 'ステアクライマー（階段）', 'ローイング', 'その他'];
 const LB = 2.20462;
+const SESSION_MODES = [['weights', 'ウェイトトレーニングのみ'], ['both', 'ウェイトトレーニング＋有酸素運動'], ['cardio', '有酸素運動のみ']];
+function sessionText() {
+  const st = S.settings, w = num(st.weightMin) || 60, c = num(st.cardioMin) || 20;
+  if (st.sessionMode === 'cardio') return `有酸素運動のみ・1回${c}分`;
+  if (st.sessionMode === 'both') return `1回${w + c}分（ウェイトトレーニング${w}分＋有酸素運動${c}分）`;
+  return `ウェイトトレーニングのみ・1回${w}分（ウォームアップ込み）`;
+}
 const BIKES = [['normal', '普通の自転車（ママチャリ・クロスバイク）'], ['assist', '電動アシスト自転車'], ['road', 'ロードバイク']];
 
 const SOURCES = { inbody: 'InBody', tanita: 'タニタ', manual: '手入力', health: 'ヘルスケア' };
@@ -47,8 +54,12 @@ const DEFAULT_SETTINGS = {
   apiKey: '',
   model: MODELS[0],
   profile: { sex: '', birthYear: '', height: '', activity: 1.375 },
-  goals: ['12月までに腹筋を割る', '丸みのある胸板をつくる'],
-  targetDate: '2026-12-31',
+  goals: ['腹筋を割る', '健康維持'],
+  // 期限: months=基準日から◯ヶ月後 / date=日付で指定
+  targetMode: 'months',
+  targetMonths: 3,
+  targetBase: '',
+  targetDate: '',
   mode: 'cut',
   daysPerWeek: 3,
   equipment: ['free', 'machine', 'cable', 'smith'],
@@ -56,6 +67,9 @@ const DEFAULT_SETTINGS = {
   override: { kcal: '', protein: '' },
   bike: 'normal',
   routes: [],
+  sessionMode: 'weights', // weights=ウェイトのみ / both=ウェイト＋有酸素 / cardio=有酸素のみ
+  weightMin: 60,
+  cardioMin: 20,
 };
 
 // ===================== 保存（iPhoneの中のデータベース） =====================
@@ -99,7 +113,11 @@ async function loadAll() {
     const v = await idbGet(k);
     if (v !== undefined) S[k] = v;
   }
-  S.settings = mergeSettings(S.settings || {});
+  const saved = S.settings;
+  // 期限の決め方が無い古い設定は、今までの日付のまま使う
+  if (saved && !saved.targetMode) saved.targetMode = 'date';
+  S.settings = mergeSettings(saved || {});
+  if (!S.settings.targetBase) S.settings.targetBase = ymd(); // 初めて開いた日を基準にする
 }
 
 // ===================== 小さな道具 =====================
@@ -137,6 +155,19 @@ function jpDate(s) {
   return `${d.getMonth() + 1}/${d.getDate()}（${'日月火水木金土'[d.getDay()]}）`;
 }
 function addDays(s, n) { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); }
+function addMonths(s, n) {
+  const d = parseYmd(s), day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + n);
+  d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  return ymd(d);
+}
+// 期限の日付（◯ヶ月後なら基準日から計算）
+function targetDate() {
+  const st = S.settings;
+  if (st.targetMode === 'months') return addMonths(st.targetBase || ymd(), num(st.targetMonths) || 3);
+  return st.targetDate || addMonths(ymd(), 3);
+}
 function daysUntil(s) { return Math.round((parseYmd(s) - parseYmd(ymd())) / 86400000); }
 
 function toast(msg) {
@@ -413,7 +444,7 @@ function absGuide() {
   const lean = w * (1 - pct / 100);
   const goalW = lean / (1 - goalPct / 100);
   const toLose = Math.max(0, w - goalW);
-  const weeks = Math.max(1, daysUntil(S.settings.targetDate) / 7);
+  const weeks = Math.max(1, daysUntil(targetDate()) / 7);
   const perWeek = toLose / weeks;
   return { goalPct, pct, toLose, perWeek, weeks, safe: perWeek <= w * 0.007, source: b.source };
 }
@@ -439,7 +470,7 @@ function profileText() {
 }
 function goalsText() {
   const st = S.settings;
-  return `${st.goals.map(g => '- ' + g).join('\n')}\n期限: ${st.targetDate}（あと${daysUntil(st.targetDate)}日）\n今の方針: ${MODES.find(m => m[0] === st.mode)?.[1]}`;
+  return `${st.goals.map(g => '- ' + g).join('\n')}\n期限: ${targetDate()}（あと${daysUntil(targetDate())}日）\n今の方針: ${MODES.find(m => m[0] === st.mode)?.[1]}`;
 }
 const equipmentText = () => S.settings.equipment.map(k => EQUIPMENT.find(e => e[0] === k)?.[1]).filter(Boolean).join('、') || '自重のみ';
 
@@ -576,16 +607,23 @@ function defaultPlan(n) {
   const push = by('push'), pull = by('pull'), legs = by('legs'), abs = by('abs');
   const chest = push.filter(c => c.part === 'chest');
   const L = abs.length;
-  // 腹の種目は毎回2つずつ、日ごとに入れ替える。それ以外は1日5種目まで
+  const st = S.settings;
+  const wMin = num(st.weightMin) || 60, cMin = num(st.cardioMin) || 20;
+  // 1種目3セットで約8分として、時間内に収まる種目数にする
+  const maxEx = Math.max(3, Math.min(8, Math.round((wMin - 5) / 8)));
+  const absN = maxEx >= 5 ? 2 : 1;
+  const cardioPlan = st.sessionMode === 'weights' ? null
+    : { type: 'エアロバイク', min: cMin, note: '会話ができるくらいの強さで。筋トレの後にやると脂肪が燃えやすい' };
+  // 腹の種目は日ごとに入れ替える
   const day = (items, focus, i) => {
-    const absPart = L ? [...new Set([abs[(i * 2) % L], abs[(i * 2 + 1) % L]])] : [];
-    const list = [...new Set(items)].slice(0, 7 - absPart.length).concat(absPart);
-    return items.length ? { name: partsLabel(list), focus, exercises: list.map(c => ex(c.name, c.sets, c.reps, c.rest, c.note)) } : null;
+    const absPart = L ? [...new Set(Array.from({ length: absN }, (_, k) => abs[(i * absN + k) % L]))] : [];
+    const list = [...new Set(items)].slice(0, maxEx - absPart.length).concat(absPart);
+    return items.length ? { name: partsLabel(list), focus, estMin: wMin + (cardioPlan ? cMin : 0), cardio: cardioPlan, exercises: list.map(c => ex(c.name, c.sets, c.reps, c.rest, c.note)) } : null;
   };
   // 胸の目標があるので胸は週2回以上。2回目以降は胸の上部（丸み）の種目を優先
   const upper = [...chest.filter(c => c.goal === 'chest'), ...chest.filter(c => c.goal !== 'chest')];
   const shoulderSide = push.filter(c => c.part === 'shoulder');
-  const rest = push.slice(5); // 1日目に入りきらなかった「押す」種目は別の日へ
+  const rest = push.slice(maxEx - absN); // 1日目に入りきらなかった「押す」種目は別の日へ
   let days;
   if (n <= 2) {
     days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day([...pull.slice(0, 3), ...upper.slice(0, 1), ...rest, ...pull.slice(3), ...legs, ...upper.slice(1, 2)], '背中・腕など「引く」筋肉の日。胸ももう一度', 1)];
@@ -595,6 +633,10 @@ function defaultPlan(n) {
     days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day(pull, '背中・腕など「引く」筋肉の日', 1), day([...upper.slice(0, 3), ...rest, ...shoulderSide], '胸の丸みを重点的に。胸と肩をもう一度', 2)];
   }
   days = days.filter(Boolean);
+  if (st.sessionMode === 'cardio') {
+    const types = ['エアロバイク', 'トレッドミル（ウォーキング・ランニング）', 'クロストレーナー'];
+    days = Array.from({ length: Math.min(n, 3) }, (_, i) => ({ name: '有酸素運動', focus: '会話ができるくらいの強さで続ける', estMin: cMin, cardio: { type: types[i % 3], min: cMin, note: '最後の5分だけ少しペースを上げる' }, exercises: [] }));
+  }
   if (!days.length) days = [{ name: '種目が選ばれていません', focus: '「やりたい種目を選ぶ」から種目を選んでください', exercises: [] }];
   days.forEach((d, i) => { d.name = `${'ABCD'[i]} ${d.name}`; });
   return {
@@ -602,10 +644,11 @@ function defaultPlan(n) {
     createdAt: ymd(),
     days,
     tips: [
-      '腹筋を割るには「腹筋運動」より「体脂肪を減らす」ことが大事。食事の目標カロリーを守りましょう。',
-      '胸の丸みは大胸筋の上部が決め手。インクライン（斜め）の種目を毎週欠かさずに。',
+      /腹/.test(st.goals.join()) && '腹筋を割るには「腹筋運動」より「体脂肪を減らす」ことが大事。食事の目標カロリーを守りましょう。',
+      /胸/.test(st.goals.join()) && '胸の丸みは大胸筋の上部が決め手。インクライン（斜め）の種目を毎週欠かさずに。',
       '決めた回数が全セットできたら、次回は重さを少し（2.5kgほど）上げましょう。',
-    ],
+      '週に何回か続けることが一番大事。疲れている日は重さを軽くしてでも、ジムに行く習慣を守りましょう。',
+    ].filter(Boolean),
   };
 }
 const currentPlan = () => S.plan || defaultPlan(S.settings.daysPerWeek);
@@ -671,7 +714,7 @@ let draft = null; // 入力中のシートの中身
 function render() {
   $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const st = S.settings;
-  const d = daysUntil(st.targetDate);
+  const d = daysUntil(targetDate());
   $('#header-sub').textContent = d >= 0 ? `目標の期限まであと${d}日` : '';
   $('#view').innerHTML = VIEWS[tab]();
   window.scrollTo(0, 0);
@@ -687,6 +730,12 @@ const VIEWS = {
     const next = nextPlanDay();
     const lastW = sortedWorkouts().at(-1);
     let html = '';
+    const hkDays = st.lastHealthImport ? -daysUntil(st.lastHealthImport) : null;
+    if (st.healthSetup && hkDays >= 5) {
+      html += `<div class="notice"><b>⌚ Apple Watchの記録を${hkDays}日取り込んでいません</b>（最後：${jpDate(st.lastHealthImport)}）<br>
+        ショートカットは直近7日分しか読めないので、早めに取り込みましょう。ショートカット「bodymake用にコピー」を実行してから押してください。
+        <button class="btn sm" data-act="healthPaste" style="margin-top:6px">今すぐ取り込む</button></div>`;
+    }
     if (!st.apiKey || !st.profile.sex || !st.profile.height) {
       html += `<div class="notice"><b>はじめに設定をしましょう</b><br>${!st.apiKey ? '・写真のAI分析に使う「APIキー」<br>' : ''}${!st.profile.sex || !st.profile.height ? '・性別と身長（カロリー計算に使います）<br>' : ''}
         <button class="btn sm" data-act="go" data-tab="settings" style="margin-top:6px">設定を開く</button></div>`;
@@ -807,14 +856,16 @@ const VIEWS = {
       <p class="small">筋トレメモの記録画面を画面収録（またはスクショ）すると、AIが種目・重さ・回数を読み取ります。今の実力をもとに、AIが重さまで提案できるようになります。</p>
       <button class="btn block" data-act="kmemoGuide">📱 筋トレメモの記録を取り込む</button></div>`;
     html += `<div class="card"><div class="spread"><h3>今のメニュー</h3><span class="muted">${plan.source === 'ai' ? `AI作成 ${h(plan.createdAt)}` : '基本メニュー'}</span></div>
-      <p class="small" style="margin:0">${plan.days.length}日分のメニューを、1日目→${plan.days.length}日目の順にくり返します。</p></div>`;
+      <p class="small" style="margin:0">${plan.days.length}日分のメニューを、1日目→${plan.days.length}日目の順にくり返します。</p>
+      <p class="muted" style="margin:4px 0 0">時間：${sessionText()}（設定で変更）</p></div>`;
     html += plan.days.map((d, i) => `<div class="card day-card">
-      <div class="day-head"><span class="day-no">${i + 1}日目</span><div class="grow"><div class="day-name">${h(d.name)}${d.name === next.name ? ' <span class="tag">次はこれ</span>' : ''}</div><div class="muted">${h(d.focus || '')}</div></div></div>
+      <div class="day-head"><span class="day-no">${i + 1}日目</span><div class="grow"><div class="day-name">${h(d.name)}${d.name === next.name ? ' <span class="tag">次はこれ</span>' : ''}</div><div class="muted">${h(d.focus || '')}${d.estMin ? ` ・ 約${r0(d.estMin)}分` : ''}</div></div></div>
       ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${h(e.name)}</div>
         <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b> ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
         ${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}
         ${effectHtml(e.name)}
         ${e.note ? `<div class="muted">💡 ${h(e.note)}</div>` : ''}</div>`).join('')}
+      ${d.cardio ? `<div class="ex"><div class="ex-name">🏃 有酸素：${h(d.cardio.type)} ${r0(d.cardio.min)}分</div>${d.cardio.note ? `<div class="muted">💡 ${h(d.cardio.note)}</div>` : ''}</div>` : ''}
       <button class="btn sm block" data-act="startDay" data-i="${i}" style="margin-top:8px">${i + 1}日目のメニューで記録する</button>
     </div>`).join('');
     html += `<div class="card">
@@ -861,10 +912,21 @@ const VIEWS = {
 
     <div class="card"><h3>目標</h3>
       <label class="field">なりたい体（1行に1つ）<textarea data-set="goals">${h(st.goals.join('\n'))}</textarea></label>
-      <label class="field">期限${dateBox('data-set="targetDate"', st.targetDate)}</label>
+      <label class="field">期限の決め方<select data-set="targetMode">${opt([['months', '今日から◯ヶ月後'], ['date', '日付で指定']], st.targetMode)}</select></label>
+      ${st.targetMode === 'months'
+        ? `<label class="field">期間<select data-set="targetMonths">${opt([1, 2, 3, 4, 6, 9, 12].map(m => [m, m === 12 ? '1年後' : `${m}ヶ月後`]), st.targetMonths)}</select></label>
+          <p class="muted">${jpDate(st.targetBase)}から数えて <b>${ymdText(targetDate())}</b> まで（あと${daysUntil(targetDate())}日）。期間を変えると、その日から数え直します。
+          <button class="btn sm" data-act="targetRestart" style="margin-top:4px">今日から数え直す</button></p>`
+        : `<label class="field">期限の日付${dateBox('data-set="targetDate"', targetDate())}</label>`}
       <label class="field">今の方針<select data-set="mode">${opt(MODES, st.mode)}</select></label>
       <label class="field">週のトレーニング回数<select data-set="daysPerWeek">${opt([[2, '週2回'], [3, '週3回'], [4, '週4回']], st.daysPerWeek)}</select></label>
-      <p class="muted">12月の目標を達成したら、ここを書き換えればそのまま使い続けられます（例: 方針を「増量」にして胸をさらに大きく）。</p>
+      <label class="field">ジムでやること<select data-set="sessionMode">${opt(SESSION_MODES, st.sessionMode)}</select></label>
+      <div class="grid2">
+        ${st.sessionMode !== 'cardio' ? `<label class="field">ウェイトの時間（分）<input type="number" inputmode="numeric" data-set="weightMin" value="${h(st.weightMin)}"></label>` : ''}
+        ${st.sessionMode !== 'weights' ? `<label class="field">有酸素の時間（分）<input type="number" inputmode="numeric" data-set="cardioMin" value="${h(st.cardioMin)}"></label>` : ''}
+      </div>
+      <p class="muted">→ ${sessionText()}。AIのメニューも基本メニューも、この時間に収まるように組みます。自転車の移動はここに含めなくて大丈夫です。</p>
+      <p class="muted">目標を達成したら、ここを書き換えればそのまま使い続けられます（例: 方針を「増量」にして胸をさらに大きく）。</p>
     </div>
 
     <div class="card"><h3>1日の目標（自動計算）</h3>
@@ -1021,10 +1083,13 @@ async function importHealth(text) {
     alert('ショートカットのデータが見つかりませんでした。\n先にショートカットを実行してから、もう一度押してください。');
     return;
   }
+  S.settings.healthSetup = true;
+  S.settings.lastHealthImport = ymd();
+  await save('settings');
   const cDates = Object.keys(d.c).filter(k => d.c[k] > 0).sort();
   const bDates = [...new Set([...Object.keys(d.w), ...Object.keys(d.f)])].sort()
     .filter(k => !S.body.some(b => b.date === k));
-  if (!cDates.length && !bDates.length) { alert('取り込める新しいデータはありませんでした（直近にサイクリングの記録がないか、取り込み済みです）。'); return; }
+  if (!cDates.length && !bDates.length) { alert('取り込める新しいデータはありませんでした（直近にサイクリングの記録がないか、取り込み済みです）。'); render(); return; }
   const lines = [];
   if (cDates.length) lines.push(`🚲 サイクリング ${cDates.length}日分（合計 ${r1(cDates.reduce((a, k) => a + d.c[k], 0))}km）`);
   if (bDates.length) lines.push(`⚖️ 体重・体脂肪率 ${bDates.length}日分`);
@@ -1050,14 +1115,14 @@ function healthGuideHtml() {
     <li>「ショートカット」アプリを開き、右上の「＋」を押す</li>
     <li>上の名前を「<b>bodymake用にコピー</b>」に変える</li>
     <li>「アクションを検索」で <b>ヘルスケアサンプルを検索</b> を追加し、次のように設定
-      <ul><li>⚠️ よく似た「ヘルスケアサンプルを<b>記録</b>」は書き込み用なので使わない（追加してしまったら✕で消す）</li><li>種類：<b>自転車の走行距離</b>（iOSによっては「サイクリングの距離」）</li><li>「開始日」が「<b>過去 7 日以内</b>」</li><li>「グループ化」があれば「<b>日</b>」（無ければそのままでOK）</li></ul></li>
+      <ul><li>⚠️ よく似た「ヘルスケアサンプルを<b>記録</b>」は書き込み用なので使わない（追加してしまったら✕で消す）</li><li>種類：<b>自転車の走行距離</b>（iOSによっては「サイクリングの距離」）</li><li>「開始日」が「<b>過去 7 日以内</b>」</li><li>単位：<b>km</b></li><li>グループ分け：<b>日</b></li></ul></li>
     <li><b>各項目を繰り返す</b> を追加（入力が「ヘルスケアサンプル」になっていればOK）</li>
     <li>繰り返しの中に <b>日付をフォーマット</b> を追加
-      <ul><li>日付の欄をタップ →「繰り返し項目」を選び、もう一度タップして「<b>開始日</b>」を選ぶ</li><li>日付フォーマット：「カスタム」→ <b>yyyy-MM-dd</b> と入力</li><li>時刻フォーマット：「なし」</li></ul></li>
+      <ul><li>日付の欄をタップ →「繰り返し項目」を選び、もう一度タップして「<b>開始日</b>」を選ぶ</li><li>日付の書式：「<b>カスタム</b>」→ 文字列をフォーマットに <b>yyyy-MM-dd</b> と入力</li></ul></li>
     <li>続けて繰り返しの中に <b>テキスト</b> を追加し、次のように入れる
-      <ul><li><b>c,</b> と入力 →「フォーマットされた日付」を挿入 → <b>,</b> と入力 →「繰り返し項目」を挿入してタップし「<b>値</b>」を選ぶ</li><li>例：<code>c,フォーマットされた日付,繰り返し項目(値)</code></li></ul></li>
+      <ul><li><b>c,</b> と入力 →「フォーマット済みの日付」を挿入 → <b>,</b> と入力 →「繰り返し項目」を挿入してタップし「<b>値</b>」を選ぶ</li><li>例：<code>c,フォーマット済みの日付,値</code></li></ul></li>
     <li>「繰り返しの終了」の<b>下</b>に <b>テキストを結合</b> を追加（入力：繰り返しの結果、区切り：<b>改行</b>）</li>
-    <li>その下に <b>テキスト</b> を追加し、1行目に <b>BODYMAKE</b>、改行して2行目に「結合されたテキスト」を挿入</li>
+    <li>その下に <b>テキスト</b> を追加し、1行目に <b>BODYMAKE</b>、改行して2行目に「結合済みのテキスト」を挿入</li>
     <li>その下に <b>クリップボードにコピー</b> を追加</li>
     <li>右上の「完了」で保存</li>
   </ol>
@@ -1113,10 +1178,8 @@ function rideCardHtml() {
       <ul class="list">${today.map(r => `<li><div class="grow small">${h(r.label || '自転車')} ${r1(r.km)}km・約${r.kcal}kcal</div>
         <button class="icon-btn" data-act="rideDelete" data-id="${r.id}" aria-label="削除">✕</button></li>`).join('')}</ul>` : '<p class="muted">今日の記録はまだありません。</p>'}
     ${routes.length ? `<div class="row wrap" style="margin:8px 0">${routes.map((r, i) => `<button class="btn sm" data-act="rideRoute" data-i="${i}">${h(r.name)} ${r1(r.round ? r.km * 2 : r.km)}km</button>`).join('')}</div>` : ''}
-    <div class="grid2">
-      <button class="btn" data-act="rideNew">＋ 距離を入れる</button>
-      <button class="btn" data-act="healthImport">⌚ Apple Watchから取り込む</button>
-    </div>
+    <button class="btn block" data-act="rideNew">＋ 距離を入れて記録</button>
+    <button class="btn block" data-act="healthImport" style="margin-top:8px">⌚ Apple Watchから取り込む</button>
     <p class="muted">${rideWeekText()}</p>
   </div>`;
 }
@@ -1248,7 +1311,10 @@ function analysisHtml(a) {
 // ===================== メニュー作成（AI） =====================
 function planPrompt() {
   const st = S.settings;
-  return `あなたは経験豊富なパーソナルトレーナーです。次の利用者のために、週${st.daysPerWeek}回・1回60〜75分のジムのトレーニングメニュー（${st.daysPerWeek}日分のローテーション）を作ってください。
+  return `あなたは経験豊富なパーソナルトレーナーです。次の利用者のために、週${st.daysPerWeek}回のジムのトレーニングメニュー（${st.daysPerWeek}日分のローテーション）を作ってください。
+【1回にかけられる時間（厳守）】${sessionText()}
+- この時間に収まる種目数・セット数・休憩にしてください（目安: 1種目3セットで約8〜10分）。estMin にその日の合計の目安（分）を入れてください。
+- ${st.sessionMode === 'weights' ? '有酸素運動はジムでは行いません（ふだんの自転車移動で行っています）。cardio は null にしてください。' : st.sessionMode === 'both' ? `各日に有酸素運動（${num(st.cardioMin) || 20}分）を cardio に入れてください。種類・強さ・タイミング（筋トレの前か後か）を目標に合わせて決めてください。` : `有酸素運動だけのメニューにしてください（exercises は空、cardio に${num(st.cardioMin) || 20}分の内容）。`}
 アマチュアでも安全にできる種目を中心に、目標に直結する種目を優先し、腹筋の目標がある場合は毎回お腹の種目を入れてください。種目名は日本のジムで一般的な呼び方にしてください。
 【重さの提案（重要）】
 - すべての種目に、今日使う重さの目安（weight）を必ず書いてください。
@@ -1272,7 +1338,7 @@ ${strengthText()}
 【最近のトレーニング記録】
 ${recentWorkoutsText()}
 次の形のJSONだけを返してください:
-{"days":[{"name":"A 胸・肩・腹 のような短い名前","focus":"この日の狙い（1文）","exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"今日の重さの目安（例: 40kg）","progression":"重さを上げる条件（例: 3セットとも12回できたら42.5kg）","note":"フォームのコツを短く"}]}],"tips":["全体のアドバイス（2〜4個）"]}`;
+{"days":[{"name":"A 胸・肩・腹 のような短い名前","focus":"この日の狙い（1文）","estMin":60,"cardio":{"type":"エアロバイク など","min":20,"note":"強さやタイミング"},"exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"今日の重さの目安（例: 40kg）","progression":"重さを上げる条件（例: 3セットとも12回できたら42.5kg）","note":"フォームのコツを短く"}]}],"tips":["全体のアドバイス（2〜4個）"]}`;
 }
 
 function kmemoPrompt(count) {
@@ -1313,7 +1379,7 @@ function workoutSheet(w, isNew) {
 }
 function renderCardio() {
   $('#w-cardio').innerHTML = draft.cardio.map((c, ci) => `<div class="cardio-row">
-    <div class="spread"><select data-in="cardio" data-c="${ci}" data-k="type">${CARDIO_TYPES.map(t => `<option ${t === c.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    <div class="spread"><select data-in="cardio" data-c="${ci}" data-k="type">${[...new Set([...CARDIO_TYPES, c.type].filter(Boolean))].map(t => `<option ${t === c.type ? 'selected' : ''}>${h(t)}</option>`).join('')}</select>
       <button class="icon-btn" data-act="cardioDel" data-c="${ci}" aria-label="削除">✕</button></div>
     <div class="grid3">
       <label class="field">時間（分）<input type="number" inputmode="numeric" data-in="cardio" data-c="${ci}" data-k="min" value="${c.min ?? ''}"></label>
@@ -1324,7 +1390,8 @@ function renderCardio() {
 const weightLbNote = (w, u = S.settings.unit) => (u === 'lb' && /kg/i.test(w) && firstNum(w) ? `（約${toUnit(firstNum(w), 'lb')}lb）` : '');
 function workoutFromPlanDay(day, date = ymd()) {
   return {
-    id: uid(), date, dayName: day.name, unit: S.settings.unit, cardio: [],
+    id: uid(), date, dayName: day.name, unit: S.settings.unit,
+    cardio: day.cardio ? [{ type: day.cardio.type, min: day.cardio.min }] : [],
     exercises: day.exercises.map(e => {
       const last = lastPerf(e.name);
       const n = num(e.sets) || 3;
@@ -1553,7 +1620,7 @@ const ACT = {
     if (!r?.days?.length) return;
     S.plan = {
       source: 'ai', createdAt: ymd(),
-      days: r.days.map(d => ({ name: String(d.name), focus: d.focus || '', exercises: (d.exercises || []).map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', progression: e.progression || '', note: e.note || '' })) })),
+      days: r.days.map(d => ({ name: String(d.name), focus: d.focus || '', estMin: num(d.estMin), cardio: d.cardio && num(d.cardio.min) ? { type: String(d.cardio.type || '有酸素運動'), min: num(d.cardio.min), note: d.cardio.note || '' } : null, exercises: (d.exercises || []).map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', progression: e.progression || '', note: e.note || '' })) })),
       tips: r.tips || [],
     };
     await save('plan');
@@ -1788,6 +1855,12 @@ const ACT = {
   },
 
   // ---- 設定 ----
+  async targetRestart() {
+    S.settings.targetBase = ymd();
+    await save('settings');
+    toast(`今日から${S.settings.targetMonths}ヶ月後（${ymdText(targetDate())}）までにしました`);
+    render();
+  },
   async testKey() {
     const r = await runAI('接続テスト中…', sig => gemini('{"ok":true} というJSONだけを返してください。', [], sig), 'test');
     if (r) alert('接続できました！写真のAI分析が使えます。');
@@ -1864,7 +1937,9 @@ async function onSettingChange(el) {
     const path = el.dataset.set.split('.');
     let v = el.value;
     if (path[0] === 'goals') v = v.split('\n').map(s => s.trim()).filter(Boolean);
-    if (['daysPerWeek'].includes(path[0]) || path[1] === 'activity') v = num(v);
+    if (['daysPerWeek', 'weightMin', 'cardioMin'].includes(path[0]) || path[1] === 'activity') v = num(v);
+    if (path[0] === 'targetMonths') { v = num(v); st.targetBase = ymd(); }
+    if (path[0] === 'targetMode') { if (v === 'date') st.targetDate = targetDate(); else st.targetBase = ymd(); }
     if (path.length === 2) st[path[0]][path[1]] = v; else st[path[0]] = v;
   }
   await save('settings');
