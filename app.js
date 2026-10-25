@@ -960,7 +960,8 @@ const VIEWS = {
       <button class="btn" data-act="mealText">✏️ 文字で記録</button>
       <button class="btn" data-act="mealFav">⭐ お気に入りから</button>
       <button class="btn" data-act="mealManual">＋ 手で入力</button>
-    </div>`;
+    </div>
+    <button class="btn block" data-act="shareNew" style="margin:-4px 0 12px">🍻 みんなで食べた（会食・分け合い）</button>`;
     for (const [type, label] of MEAL_TYPES) {
       const list = ms.filter(m => m.type === type);
       if (!list.length) continue;
@@ -1382,6 +1383,71 @@ function rideSheet() {
     <button class="btn primary block" data-act="rideSave">記録する</button>`);
 }
 
+// ===================== みんなで食べた（会食・分け合い） =====================
+const SHARE_AMOUNTS = [[0.7, '少なめ'], [1, '同じくらい'], [1.3, '多め']];
+// 自分の飲み物 1杯あたり [名前, kcal, たんぱく質, 脂質, 炭水化物]（お酒のカロリーはPFC以外にアルコール分を含む）
+const DRINKS = [
+  ['beer', 'ビール 中ジョッキ', 180, 1.5, 0, 14],
+  ['beerS', 'ビール グラス・小', 100, 0.8, 0, 8],
+  ['high', 'ハイボール', 80, 0, 0, 0],
+  ['sour', 'レモンサワー・チューハイ', 150, 0, 0, 15],
+  ['sake', '日本酒 1合', 190, 0.7, 0, 8],
+  ['wine', 'ワイン グラス', 90, 0.2, 0, 2],
+  ['shochu', '焼酎（水割り・お湯割り）', 70, 0, 0, 0],
+  ['cocktail', 'カクテル・梅酒', 180, 0, 0, 20],
+  ['juice', 'ジュース・ソフトドリンク', 140, 0, 0, 35],
+  ['tea', 'ウーロン茶・お茶', 0, 0, 0, 0],
+];
+// ざっくり記録: 1人前（ふつう）の目安 [名前, kcal, たんぱく質%, 脂質%, 炭水化物%]
+const SHOPS = [
+  ['izakaya', '居酒屋', 900, 20, 40, 40], ['yakiniku', '焼肉', 1100, 25, 50, 25], ['chuka', '中華', 1000, 15, 40, 45],
+  ['italian', 'イタリアン', 1000, 15, 35, 50], ['sushi', '寿司', 800, 20, 15, 65], ['nabe', '鍋', 800, 30, 30, 40],
+  ['famires', 'ファミレス', 900, 15, 40, 45], ['cafe', 'カフェ・軽食', 500, 10, 40, 50], ['other', 'その他', 900, 18, 35, 47],
+];
+const ROUGH_AMOUNTS = [[0.7, '少なめ'], [1, 'ふつう'], [1.4, 'たくさん']];
+
+function shareSheet() {
+  draft = { mode: 'photo', people: 4, factor: 1, drinks: {}, shop: 'izakaya', rough: 1 };
+  openSheet('みんなで食べた食事を記録', '<div id="share-body"></div>');
+  renderShare();
+}
+function renderShare() {
+  const d = draft;
+  const seg = (act, list, cur) => `<div class="seg">${list.map(([v, l]) => `<button class="${String(v) === String(cur) ? 'on' : ''}" data-act="${act}" data-v="${v}">${l}</button>`).join('')}</div>`;
+  const drinkKcal = DRINKS.reduce((a, x) => a + (d.drinks[x[0]] || 0) * x[2], 0);
+  $('#share-body').innerHTML = `
+    <p class="small">記録のしかた</p>
+    ${seg('shareMode', [['photo', '📷 写真'], ['receipt', '🧾 レシート'], ['rough', '⚡ ざっくり']], d.mode)}
+    <p class="muted">${{ photo: '料理が並んだテーブル全体を1〜2枚撮った写真から計算します。', receipt: '会計のレシート（伝票）の写真から、頼んだ料理を読み取って計算します。', rough: 'お店の種類と量から、だいたいのカロリーを入れます（写真なし・AIなし）。' }[d.mode]}</p>
+    ${d.mode === 'rough' ? `
+      <label class="field">お店の種類<select data-in="shareShop">${SHOPS.map(x => `<option value="${x[0]}" ${x[0] === d.shop ? 'selected' : ''}>${x[1]}</option>`).join('')}</select></label>
+      <p class="small">自分が食べた量</p>${seg('shareRough', ROUGH_AMOUNTS, d.rough)}`
+    : `
+      <div class="spread" style="margin-top:12px"><span class="small">何人で分けた？</span>
+        <span class="stepper"><button class="btn sm" data-act="sharePeople" data-v="-1">−</button><b>${d.people}人</b><button class="btn sm" data-act="sharePeople" data-v="1">＋</button></span></div>
+      <p class="small">自分が食べた量（みんなと比べて）</p>${seg('shareFactor', SHARE_AMOUNTS, d.factor)}`}
+    <h4>🍺 自分の飲み物</h4>
+    <p class="muted">飲み物は人によって量が違うので、自分の分だけ数えます。${drinkKcal ? `今 <b>${drinkKcal}kcal</b>` : ''}</p>
+    ${DRINKS.map(x => `<div class="drink-row"><span class="small">${x[1]} <span class="muted">${x[2]}kcal</span></span>
+      <span class="stepper"><button class="btn sm" data-act="shareDrink" data-k="${x[0]}" data-v="-1">−</button><b>${d.drinks[x[0]] || 0}</b><button class="btn sm" data-act="shareDrink" data-k="${x[0]}" data-v="1">＋</button></span></div>`).join('')}
+    <button class="btn primary block" data-act="shareRun" style="margin-top:14px">${{ photo: '📷 写真を選んで計算', receipt: '🧾 レシートを選んで計算', rough: '計算する' }[d.mode]}</button>`;
+}
+function sharePrompt(kind, people) {
+  return `あなたは日本の管理栄養士です。これは${people}人で分け合って食べた食事の${kind === 'receipt' ? 'レシート（伝票）' : 'テーブルの写真'}です。
+${kind === 'receipt' ? 'レシートに書かれた料理名と数量を読み取り、' : '写っている料理をすべて特定し、'}テーブル全体（${people}人分の合計）の料理ごとのカロリー(kcal)・たんぱく質(g)・脂質(g)・炭水化物(g)を見積もってください。
+- 飲み物（お酒・ソフトドリンク）は含めない（別に数えます）
+${kind === 'receipt' ? '- 数量が2以上なら、その分を合計した値にする。席料・サービス料・割引など食べ物でないものは除く。お通しは含める' : '- 写っている量で見積もる。取り皿に取り分けた料理も含める'}
+- 日本の一般的な外食の1皿の量を参考にする
+次の形のJSONだけを返してください（数値は数字のみ）:
+{"name":"食事の短い名前（例: 焼肉）","items":[{"name":"料理名","amount":"全体の量（例: 2皿）","kcal":数値,"protein":数値,"fat":数値,"carbs":数値}],"note":"推定の根拠や注意点を1〜2文"}`;
+}
+function drinkItems() {
+  return DRINKS.filter(x => draft.drinks[x[0]]).map(x => {
+    const n = draft.drinks[x[0]];
+    return { name: x[1], amount: `${n}杯（自分の分）`, kcal: x[2] * n, protein: x[3] * n, fat: x[4] * n, carbs: x[5] * n };
+  });
+}
+
 // ===================== 体データのシート =====================
 function bodySheet(b, isNew) {
   draft = structuredClone(b);
@@ -1632,6 +1698,43 @@ const ACT = {
     const r = await runAI('AIが計算中…', sig => gemini(mealTextPrompt(text), [], sig), 'text');
     if (!r) return;
     mealSheet(newMeal(normalizeMeal(r)), true);
+  },
+  shareNew: () => shareSheet(),
+  shareMode: el => { draft.mode = el.dataset.v; renderShare(); },
+  shareFactor: el => { draft.factor = +el.dataset.v; renderShare(); },
+  shareRough: el => { draft.rough = +el.dataset.v; renderShare(); },
+  sharePeople: el => { draft.people = Math.max(1, Math.min(30, draft.people + +el.dataset.v)); renderShare(); },
+  shareDrink(el) {
+    const k = el.dataset.k;
+    draft.drinks[k] = Math.max(0, (draft.drinks[k] || 0) + +el.dataset.v);
+    renderShare();
+  },
+  async shareRun() {
+    const d = draft, drinks = drinkItems();
+    if (d.mode === 'rough') {
+      const [, label, kcal0, p, f, c] = SHOPS.find(x => x[0] === d.shop);
+      const kcal = Math.round(kcal0 * d.rough);
+      const amount = ROUGH_AMOUNTS.find(x => x[0] === d.rough)[1];
+      const food = { name: `${label}の料理（ざっくり）`, amount: `自分の分・${amount}`, kcal, protein: Math.round(kcal * p / 100 / 4), fat: Math.round(kcal * f / 100 / 9), carbs: Math.round(kcal * c / 100 / 4) };
+      closeSheet();
+      mealSheet(newMeal({ type: 'dinner', name: `${label}（ざっくり）`, items: [food, ...drinks], note: `${label}の1人前の目安（${amount}）から計算したざっくりの値です。` }), true);
+      return;
+    }
+    const [file, ...more] = await pickPhotos(true);
+    if (!file) return;
+    const imgs = await filesToImages([file, ...more], 1600, 1, 4);
+    const r = await runAI(d.mode === 'receipt' ? 'AIがレシートを読み取り中…' : 'AIが料理を分析中…', sig => gemini(sharePrompt(d.mode, d.people), imgs, sig), 'meal');
+    if (!r) return;
+    const m = normalizeMeal(r);
+    const share = d.factor / d.people;
+    const amount = SHARE_AMOUNTS.find(x => x[0] === d.factor)[1];
+    // テーブル全体の値を、自分の分（人数で割って、食べた量を掛ける）にする
+    const items = m.items.map(i => ({ ...i, amount: `全体${i.amount ? '：' + i.amount : ''} の約${Math.round(share * 100)}%`,
+      kcal: Math.round(i.kcal * share), protein: Math.round(i.protein * share * 10) / 10, fat: Math.round(i.fat * share * 10) / 10, carbs: Math.round(i.carbs * share * 10) / 10 }));
+    const thumb = await resizeImage(imgs[0], 360, 0.7);
+    closeSheet();
+    mealSheet(newMeal({ type: 'dinner', name: `${m.name}（${d.people}人・${amount}）`, items: [...items, ...drinks], thumb,
+      note: `テーブル全体で約${r0(sum(m.items, 'kcal'))}kcal を ${d.people}人で分けて、自分は「${amount}」として計算しました。${m.note || ''}` }), true);
   },
   mealManual: () => mealSheet(newMeal({ name: '', items: [{ name: '', amount: '', kcal: 0, protein: 0, fat: 0, carbs: 0 }] }), true),
   mealFav() {

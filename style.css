@@ -240,6 +240,11 @@ details summary { cursor: pointer; color: var(--accent); font-weight: 600; paddi
 .today-adj { background: var(--bg); border-radius: 12px; padding: 4px 12px 10px; margin-bottom: 10px; }
 .today-adj label.field { margin: 8px 0; }
 .today-note { color: var(--warn); margin-top: 2px; }
+.stepper { display: inline-flex; align-items: center; gap: 10px; }
+.stepper b { min-width: 2.5em; text-align: center; }
+.stepper .btn.sm { min-width: 40px; }
+.drink-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+#share-body .seg { margin: 4px 0; }
 .spinner { width: 44px; height: 44px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
