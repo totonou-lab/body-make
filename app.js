@@ -73,7 +73,7 @@ const DEFAULT_SETTINGS = {
 };
 
 // ===================== 保存（iPhoneの中のデータベース） =====================
-const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [], rides: [] };
+const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [], rides: [], today: null };
 let dbPromise;
 
 function db() {
@@ -516,18 +516,23 @@ function normalizeMeal(r) {
 
 // ===================== トレーニング =====================
 const ex = (name, sets, reps, rest, note = '') => ({ name, sets, reps, rest, weight: '', note });
+// 時間の見積もり（分）
+const WARMUP_MIN = 10, EX_MIN = 12, ABS_MIN = 5;
 
 // 種目の一覧。group: push=押す / pull=引く / abs=腹 / legs=脚。goal: 目標との関係
 const PARTS = [['chest', '胸'], ['back', '背中'], ['shoulder', '肩'], ['arm', '腕'], ['abs', '腹'], ['legs', '脚・お尻']];
 const GOAL_TAGS = { chest: '胸の丸み', abs: '腹筋', look: '見た目の変化大' };
+const beginnerTag = c => (c.beginner ? ' <span class="tag beginner">初心者におすすめ</span>' : '');
 const CATALOG = [
   // 胸
+  { id: 'c9', part: 'chest', group: 'push', eq: 'smith', name: 'ベンチプレス（スミスマシン）', sets: 3, reps: '8-10', rest: '2分', beginner: true,
+    where: '大胸筋全体・肩の前・腕の裏', effect: 'バーの動く道すじが決まっていて、つぶれそうになってもフックに掛ければ止められるので、初心者でも安全に重さを扱える。胸板を厚くする基本の種目', note: 'バーを胸の真ん中（乳首の少し上）に下ろす' },
+  { id: 'c3', part: 'chest', group: 'push', eq: 'free', name: 'ベンチプレス', sets: 3, reps: '6-10', rest: '2分',
+    where: '大胸筋全体・肩の前・腕の裏', effect: '胸全体のボリュームが増えて、胸板が厚くなる。上半身の筋力の土台', note: '肩甲骨を寄せて胸を張ったまま' },
   { id: 'c1', part: 'chest', group: 'push', eq: 'smith', name: 'インクラインベンチプレス（スミスマシン）', sets: 3, reps: '8-10', rest: '2分', goal: 'chest',
     where: '大胸筋の上部・肩の前・腕の裏', effect: '胸の上の方に厚みが出て、胸が上向きに丸く盛り上がって見える。「丸みのある胸板」の土台になる種目', note: 'ベンチは30度くらい。鎖骨の下あたりに下ろす' },
   { id: 'c2', part: 'chest', group: 'push', eq: 'free', name: 'インクラインダンベルプレス', sets: 3, reps: '8-12', rest: '90秒', goal: 'chest',
     where: '大胸筋の上部', effect: '左右別々に動かすので深く下ろせて、胸の上部をしっかり伸ばして丸みを作れる。左右差の改善にも', note: '下ろしたとき胸がしっかり伸びるところまで' },
-  { id: 'c3', part: 'chest', group: 'push', eq: 'free', name: 'ベンチプレス', sets: 3, reps: '6-10', rest: '2分',
-    where: '大胸筋全体・肩の前・腕の裏', effect: '胸全体のボリュームが増えて、胸板が厚くなる。上半身の筋力の土台', note: '肩甲骨を寄せて胸を張ったまま' },
   { id: 'c4', part: 'chest', group: 'push', eq: 'machine', name: 'チェストプレス（マシン）', sets: 3, reps: '10-12', rest: '90秒',
     where: '大胸筋全体', effect: '動く道すじが決まっているので、胸に効かせやすい。最後の追い込みにも向く', note: '胸を張ったまま押す' },
   { id: 'c5', part: 'chest', group: 'push', eq: 'machine', name: 'ペックフライ（マシン）', sets: 3, reps: '12-15', rest: '60秒',
@@ -592,7 +597,12 @@ const CATALOG = [
   { id: 'l5', part: 'legs', group: 'legs', eq: 'machine', name: 'レッグエクステンション（マシン）', sets: 3, reps: '12-15', rest: '60秒',
     where: '太ももの前', effect: '膝の上の筋肉が発達し、脚にメリハリが出る', note: '上で1秒止める' },
 ];
-const DEFAULT_CHOSEN = ['c1', 'c2', 'c4', 'c6', 'b1', 'b2', 's2', 's5', 'a1', 'a3', 'ab1', 'ab2', 'ab4'];
+const DEFAULT_CHOSEN = ['c9', 'c1', 'c2', 'c4', 'c6', 'b1', 'b2', 's2', 's5', 'a1', 'a3', 'ab1', 'ab2', 'ab4'];
+// 並び順: 1=重さを扱う多関節種目（フリーウェイト・スミス・自重）→ 2=マシンの多関節種目 → 3=仕上げの単関節種目 → 4=腹
+const TIER = { c9: 1, c3: 1, c1: 1, c2: 1, c8: 1, b4: 1, b3: 1, l1: 1, l3: 1, c4: 2, b1: 2, b2: 2, s1: 2, l2: 2 };
+const tierOf = c => (c.group === 'abs' ? 4 : TIER[c.id] || 3);
+const PART_ORDER = { chest: 0, back: 1, legs: 2, shoulder: 3, arm: 4, abs: 5 };
+const byTier = list => [...list].sort((a, b) => tierOf(a) - tierOf(b) || PART_ORDER[a.part] - PART_ORDER[b.part] || CATALOG.indexOf(a) - CATALOG.indexOf(b));
 const normName = n => String(n || '').replace(/[（(][^）)]*[）)]/g, '').replace(/\s/g, '');
 const catalogFor = name => CATALOG.find(c => c.name === name) || CATALOG.find(c => normName(c.name) === normName(name));
 const eqOk = c => c.eq === 'body' || S.settings.equipment.includes(c.eq) || (c.id === 'b2' && S.settings.equipment.includes('cable')) || (c.id === 's1' && S.settings.equipment.includes('free'));
@@ -604,21 +614,23 @@ function partsLabel(items) {
 function defaultPlan(n) {
   const chosen = chosenList();
   const by = g => chosen.filter(c => c.group === g);
-  const push = by('push'), pull = by('pull'), legs = by('legs'), abs = by('abs');
+  const push = byTier(by('push')), pull = byTier(by('pull')), legs = byTier(by('legs')), abs = by('abs');
   const chest = push.filter(c => c.part === 'chest');
   const L = abs.length;
   const st = S.settings;
   const wMin = num(st.weightMin) || 60, cMin = num(st.cardioMin) || 20;
-  // 1種目3セットで約8分として、時間内に収まる種目数にする
-  const maxEx = Math.max(3, Math.min(8, Math.round((wMin - 5) / 8)));
-  const absN = maxEx >= 5 ? 2 : 1;
+  // ウォームアップ10分＋1種目約12分（空き待ち・準備込み）＋腹筋1種目約5分で、余裕を残して組む
+  const absN = wMin >= 75 ? 2 : 1;
+  const mainN = Math.max(2, Math.floor((wMin - WARMUP_MIN - ABS_MIN * absN) / EX_MIN));
+  const maxEx = mainN + absN;
   const cardioPlan = st.sessionMode === 'weights' ? null
     : { type: 'エアロバイク', min: cMin, note: '会話ができるくらいの強さで。筋トレの後にやると脂肪が燃えやすい' };
   // 腹の種目は日ごとに入れ替える
   const day = (items, focus, i) => {
     const absPart = L ? [...new Set(Array.from({ length: absN }, (_, k) => abs[(i * absN + k) % L]))] : [];
-    const list = [...new Set(items)].slice(0, maxEx - absPart.length).concat(absPart);
-    return items.length ? { name: partsLabel(list), focus, estMin: wMin + (cardioPlan ? cMin : 0), cardio: cardioPlan, exercises: list.map(c => ex(c.name, c.sets, c.reps, c.rest, c.note)) } : null;
+    const list = byTier([...new Set(items)].slice(0, maxEx - absPart.length)).concat(absPart);
+    const est = WARMUP_MIN + list.reduce((a, c) => a + (c.group === 'abs' ? ABS_MIN : EX_MIN), 0);
+    return items.length ? { name: partsLabel(list), focus, estMin: est + (cardioPlan ? cMin : 0), cardio: cardioPlan, exercises: list.map(c => ex(c.name, c.sets, c.reps, c.rest, c.note)) } : null;
   };
   // 胸の目標があるので胸は週2回以上。2回目以降は胸の上部（丸み）の種目を優先
   const upper = [...chest.filter(c => c.goal === 'chest'), ...chest.filter(c => c.goal !== 'chest')];
@@ -626,11 +638,11 @@ function defaultPlan(n) {
   const rest = push.slice(maxEx - absN); // 1日目に入りきらなかった「押す」種目は別の日へ
   let days;
   if (n <= 2) {
-    days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day([...pull.slice(0, 3), ...upper.slice(0, 1), ...rest, ...pull.slice(3), ...legs, ...upper.slice(1, 2)], '背中・腕など「引く」筋肉の日。胸ももう一度', 1)];
+    days = [day(push, '「押す」動きで、胸を中心に鍛える日', 0), day([...pull.slice(0, 3), ...upper.slice(0, 1), ...rest, ...pull.slice(3), ...legs, ...upper.slice(1, 2)], '「引く」動きで背中を中心に。胸ももう一度', 1)];
   } else if (legs.length) {
-    days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day(legs, '脚の日', 1), day([...pull, ...rest, ...upper.slice(0, 2)], '背中・腕など「引く」筋肉の日。胸ももう一度', 2)];
+    days = [day(push, '「押す」動きで、胸を中心に鍛える日', 0), day(legs, '脚の日', 1), day([...pull, ...rest, ...upper.slice(0, 2)], '「引く」動きで背中を中心に。胸ももう一度', 2)];
   } else {
-    days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day(pull, '背中・腕など「引く」筋肉の日', 1), day([...upper.slice(0, 3), ...rest, ...shoulderSide], '胸の丸みを重点的に。胸と肩をもう一度', 2)];
+    days = [day(push, '「押す」動きで、胸を中心に鍛える日', 0), day(pull, '「引く」動きで、背中を中心に鍛える日', 1), day([...upper.slice(0, 3), ...rest, ...shoulderSide], '胸の丸みを重点的に。胸と肩をもう一度', 2)];
   }
   days = days.filter(Boolean);
   if (st.sessionMode === 'cardio') {
@@ -661,6 +673,162 @@ function nextPlanDay() {
   const i = days.findIndex(d => d.name === last.dayName);
   return days[(i + 1) % days.length];
 }
+// 回復の目安: 大きい筋肉は約72時間、小さい筋肉は約48時間
+const BIG_PARTS = ['chest', 'back', 'legs'];
+const recoverDays = part => (BIG_PARTS.includes(part) ? 3 : 2);
+const dayParts = day => [...new Set((day?.exercises || []).map(e => catalogFor(e.name)?.part).filter(p => p && p !== 'abs'))];
+const strengthWorkouts = () => sortedWorkouts().filter(w => w.exercises?.length);
+function lastTrainedMap(extra) {
+  const map = {};
+  for (const w of strengthWorkouts()) for (const e of w.exercises) { const p = catalogFor(e.name)?.part; if (p) map[p] = w.date; }
+  if (extra) for (const p of extra.parts) map[p] = extra.date;
+  return map;
+}
+const sessionGap = () => Math.ceil(7 / (num(S.settings.daysPerWeek) || 3));
+// day をやるのにおすすめの日。extra = まだ記録していない「今日やる分」
+function suggestDate(day, extra) {
+  const lastDate = extra?.date || strengthWorkouts().at(-1)?.date;
+  if (!lastDate) return { date: ymd(), why: '' };
+  let date = addDays(lastDate, sessionGap());
+  let why = `週${S.settings.daysPerWeek}回のペース`;
+  const map = lastTrainedMap(extra);
+  for (const p of dayParts(day)) {
+    if (!map[p]) continue;
+    const ok = addDays(map[p], recoverDays(p));
+    if (ok > date) { date = ok; why = `${PARTS.find(x => x[0] === p)[1]}の回復（約${recoverDays(p) * 24}時間）`; }
+  }
+  return { date: date < ymd() ? ymd() : date, why };
+}
+const dayAfter = day => { const ds = currentPlan().days; return ds[(ds.findIndex(d => d.name === day.name) + 1) % ds.length]; };
+// 今日はやる日か休む日か
+function trainStatus() {
+  const todayW = strengthWorkouts().find(w => w.date === ymd());
+  const next = nextPlanDay();
+  if (todayW) return { state: 'done', todayW, next, nextAt: suggestDate(next) };
+  const at = suggestDate(next);
+  if (at.date <= ymd()) {
+    const after = dayAfter(next);
+    return { state: 'go', today: next, next: after, nextAt: suggestDate(after, { date: ymd(), parts: dayParts(next) }) };
+  }
+  return { state: 'rest', last: strengthWorkouts().at(-1), next, nextAt: at };
+}
+const menuLabel = d => { const i = currentPlan().days.findIndex(x => x.name === d.name); return `メニュー${'ABCDEFG'[i] || ''}`; };
+const dayTitle = d => d.name.replace(/^[A-G]\s+/, '');
+const SUPER = '<span class="muted">（超回復：筋トレで疲れた筋肉が、休むことで前より強くなること）</span>';
+// ===================== 今日の時間・調子でメニューを調整 =====================
+const CONDITIONS = [
+  ['push', '追い込みたい', 1, '最初の2種目は1セット増やし、最後のセットは限界まで'],
+  ['normal', 'ふつう', 1, ''],
+  ['tired', '疲れ気味', 0.9, 'いつもの9割の重さで。回数は守る'],
+  ['form', 'フォーム重視', 0.75, '軽めの重さで12〜15回。3秒かけて下ろし、反動を使わない'],
+];
+const TODAY_MINUTES = [30, 45, 60, 75, 90];
+// 今日の入力（日付が変わったら元に戻る）
+function todayInput() {
+  const t = S.today && S.today.date === ymd() ? S.today : null;
+  return { minutes: t?.minutes ?? (num(S.settings.weightMin) || 60), cond: t?.cond || 'normal', memo: t?.memo || '', aiDay: t?.aiDay || null };
+}
+const isDefaultToday = t => t.minutes === (num(S.settings.weightMin) || 60) && t.cond === 'normal' && !t.aiDay;
+const round25 = v => Math.max(0, Math.round(v / 2.5) * 2.5);
+const isAbsEx = e => catalogFor(e.name)?.group === 'abs';
+// 基本の重さ: メニューの目安 → 無ければ前回の一番重いセット
+function baseWeight(e) {
+  const w = firstNum(e.weight);
+  if (w) return w;
+  const last = lastPerf(e.name);
+  return last ? Math.max(...last.sets.map(s => num(s.w) || 0)) || null : null;
+}
+function adjustDay(day) {
+  const t = todayInput();
+  if (t.aiDay && t.aiDay.name === day.name) return t.aiDay;
+  if (isDefaultToday(t) || !day.exercises.length) return day;
+  const absN = t.minutes >= 75 ? 2 : 1;
+  const mainN = Math.max(1, Math.floor((t.minutes - WARMUP_MIN - ABS_MIN * absN) / EX_MIN));
+  let main = day.exercises.filter(e => !isAbsEx(e)), abs = day.exercises.filter(isAbsEx);
+  const have = new Set(day.exercises.map(e => e.name));
+  const extra = group => byTier(chosenList().filter(c => !have.has(c.name) && (group === 'abs' ? c.group === 'abs' : c.group !== 'abs')))
+    .sort((a, b) => dayParts(day).includes(b.part) - dayParts(day).includes(a.part));
+  // 時間が短ければ重い種目から残し、長ければ同じ部位の種目を足す
+  if (main.length > mainN) main = main.slice(0, mainN);
+  else for (const c of extra('main')) { if (main.length >= mainN) break; main.push(ex(c.name, c.sets, c.reps, c.rest, c.note)); }
+  if (abs.length > absN) abs = abs.slice(0, absN);
+  else for (const c of extra('abs')) { if (abs.length >= absN) break; abs.push(ex(c.name, c.sets, c.reps, c.rest, c.note)); }
+  const [, condLabel, factor, condNote] = CONDITIONS.find(c => c[0] === t.cond);
+  const exercises = [...main, ...abs].map((e, i) => {
+    const x = { ...e, adj: true };
+    if (!isAbsEx(e)) {
+      const bw = baseWeight(e);
+      // ダンベルは1kg刻み、それ以外は2.5kg刻みで丸める
+      const rounded = /ダンベル/.test(e.name) ? Math.round(bw * factor) : round25(bw * factor);
+      if (bw && factor !== 1) { x.weight = `${rounded}kg`; x.usual = `${bw}kg`; }
+      else if (bw && !x.weight) x.weight = `${bw}kg`;
+      if (t.cond === 'form') x.reps = '12-15';
+      if (t.cond === 'push' && i < 2) x.sets = (num(e.sets) || 3) + 1;
+    }
+    if (condNote && !isAbsEx(e)) x.todayNote = condNote;
+    return x;
+  });
+  const est = WARMUP_MIN + exercises.reduce((a, e) => a + (isAbsEx(e) ? ABS_MIN : EX_MIN), 0);
+  return { ...day, exercises, estMin: est + (day.cardio ? day.cardio.min : 0), todayLabel: `${t.minutes}分・${condLabel}` };
+}
+function todayAdjustHtml() {
+  const t = todayInput();
+  return `<div class="today-adj">
+    <div class="grid2">
+      <label class="field">⏱ 今日の時間<select data-in="todayAdj" data-k="minutes">${TODAY_MINUTES.map(m => `<option value="${m}" ${m === t.minutes ? 'selected' : ''}>${m}分${m === (num(S.settings.weightMin) || 60) ? '（いつも）' : ''}</option>`).join('')}</select></label>
+      <label class="field">😊 今日の調子<select data-in="todayAdj" data-k="cond">${CONDITIONS.map(([v, l]) => `<option value="${v}" ${v === t.cond ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </div>
+    <details ${t.memo || t.aiDay ? 'open' : ''}><summary class="small">📝 体調メモを書いてAIに相談する</summary>
+      <textarea id="today-memo" placeholder="例：肩が少し痛い／寝不足／脚が筋肉痛">${h(t.memo)}</textarea>
+      <button class="btn sm" data-act="todayAI" style="margin-top:6px">🤖 AIに相談して今日のメニューを調整</button>
+    </details>
+    ${!isDefaultToday(t) ? `<p class="small hint">今日だけ「${t.aiDay ? 'AIが調整' : `${t.minutes}分・${CONDITIONS.find(c => c[0] === t.cond)[1]}`}」のメニューにしています。${t.aiDay?.advice ? `<br>💬 ${h(t.aiDay.advice)}` : ''}
+      <button class="btn sm" data-act="todayReset" style="margin-top:4px">いつものメニューに戻す</button></p>` : ''}
+  </div>`;
+}
+function todayPrompt(day, t) {
+  return `あなたは経験豊富なパーソナルトレーナーです。今日のジムのメニューを、利用者の今日の状態に合わせて調整してください。
+【元のメニュー】${JSON.stringify({ name: day.name, exercises: day.exercises.map(e => ({ name: e.name, sets: e.sets, reps: e.reps, rest: e.rest, weight: e.weight })), cardio: day.cardio })}
+【今日の時間】${t.minutes}分（ウォームアップ10分＋1種目3セット約12分＋腹筋1種目約5分で見積もり、5〜10分の余裕を残す）
+【今日の調子】${CONDITIONS.find(c => c[0] === t.cond)[1]}
+【体調メモ】${t.memo || 'なし'}
+【やりたい種目（この中から選ぶ）】
+${chosenList().map(c => `- ${c.name}`).join('\n')}
+【種目ごとの実力（kg）】
+${strengthText()}
+- 痛みがある部位は無理に鍛えず、別の部位の種目や軽い重さに置き換えてください。痛みが強い場合は休むことをすすめてください。
+- 重さの目安（weight）は必ず書き、順番は重い種目→マシン→仕上げの種目→腹筋にしてください。
+次の形のJSONだけを返してください:
+{"focus":"今日の狙い（1文）","estMin":45,"advice":"今日の注意点（1〜2文）","cardio":null,"exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"40kg","alt":"混んでいたときの代わり","note":"コツを短く"}]}`;
+}
+
+function dayCardHtml(d, opts = {}) {
+  const i = currentPlan().days.findIndex(x => x.name === d.name);
+  return `<div class="day-head"><span class="day-no">${menuLabel(d)}</span><div class="grow"><div class="day-name">${h(dayTitle(d))}</div><div class="muted">${h(d.focus || '')}${d.estMin ? ` ・ 約${r0(d.estMin)}分` : ''}</div></div></div>
+    ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${howtoLink(e.name)}</div>
+      <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b>${e.usual ? `<span class="muted">（いつもは${h(e.usual)}）</span>` : ''} ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
+      ${e.todayNote ? `<div class="small today-note">🎯 今日は：${h(e.todayNote)}</div>` : ''}
+      ${opts.compact ? '' : `${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}${effectHtml(e.name)}${e.note ? `<div class="muted">💡 ${h(e.note)}</div>` : ''}`}
+      ${(alt => (alt ? `<div class="small alt">🔁 混んでいたら：${howtoLink(alt)}</div>` : ''))(altOf(e, d.exercises.map(x => x.name)))}</div>`).join('')}
+    ${d.cardio ? `<div class="ex"><div class="ex-name">🏃 有酸素：${h(d.cardio.type)} ${r0(d.cardio.min)}分</div>${d.cardio.note && !opts.compact ? `<div class="muted">💡 ${h(d.cardio.note)}</div>` : ''}</div>` : ''}
+    ${opts.button === false ? '' : `<button class="btn ${opts.primary ? 'primary' : 'sm'} block" data-act="startDay" data-i="${i}" ${opts.today ? 'data-today="1"' : ''} style="margin-top:8px">${opts.buttonText || `${menuLabel(d)}で記録する`}</button>`}`;
+}
+// 器具が使えないときの代わり（上から順に、使える器具で、その日のメニューに無いものを選ぶ）
+const ALT = {
+  c9: ['c3', 'c4'], c3: ['c9', 'c4'], c1: ['c2', 'c6', 'c4'], c2: ['c1', 'c6', 'c4'], c4: ['c9', 'c3', 'c2'], c5: ['c7', 'c6'], c6: ['c5', 'c2'], c7: ['c5', 'c8'], c8: ['c7', 'c4'],
+  b1: ['b4', 'b3'], b2: ['b3', 'b1'], b3: ['b2', 'b1'], b4: ['b1', 'b3'],
+  s1: ['s2'], s2: ['s3', 's1'], s3: ['s2', 's1'], s4: ['s5'], s5: ['s4'],
+  a1: ['a2'], a2: ['a1'], a3: ['c8'],
+  ab1: ['ab4', 'ab5'], ab2: ['ab3', 'ab5'], ab3: ['ab5', 'ab2'], ab4: ['ab1', 'ab7'], ab5: ['ab3', 'ab2'], ab6: ['ab7'], ab7: ['ab4', 'ab6'],
+  l1: ['l2'], l2: ['l1'], l3: ['l4'], l4: ['l3'], l5: ['l2'],
+};
+function altFor(name, exclude = []) {
+  const c = catalogFor(name);
+  if (!c) return null;
+  const ex = new Set(exclude);
+  return (ALT[c.id] || []).map(id => CATALOG.find(x => x.id === id)).find(x => x && eqOk(x) && !ex.has(x.name))?.name || null;
+}
+const altOf = (e, exclude) => e.alt || altFor(e.name, exclude);
 function lastPerf(name, beforeId) {
   const ws = sortedWorkouts().reverse();
   for (const w of ws) {
@@ -760,10 +928,14 @@ const VIEWS = {
         <div class="stat"><b>${r1(num(b.fatPct))}</b><span>体脂肪率 %</span></div>
         <div class="stat"><b>${r1(num(b.skeletalMuscle ?? b.muscle))}</b><span>${b.skeletalMuscle != null ? '骨格筋量' : '筋肉量'} kg</span></div>
       </div><p class="muted">${jpDate(b.date)}・${SOURCES[b.source] || ''}</p>` : '<p class="muted">まだ記録がありません。</p>'}</div>`;
-    html += `<div class="card"><h3>次のトレーニング</h3>
-      <p><b>${h(next.name)}</b><br><span class="muted">${h(next.focus || '')}</span></p>
-      ${lastW ? `<p class="muted">前回: ${jpDate(lastW.date)} ${h(lastW.dayName)}</p>` : ''}
-      <button class="btn block" data-act="startWorkout">このメニューで記録を始める</button></div>`;
+    const ts = trainStatus();
+    html += `<div class="card"><h3>トレーニング</h3>
+      ${ts.state === 'go' ? `<p class="small">💪 今日のメニュー：<b>${menuLabel(ts.today)} ${h(dayTitle(ts.today))}</b></p>
+        <button class="btn primary block" data-act="startWorkout">今日のメニューで記録を始める</button>`
+      : `<p class="small">${ts.state === 'done' ? '✅ 今日はトレーニング済み。' : '🛌 今日は休養日。'}体を休ませて超回復を待ちましょう。</p>
+        <p class="small">📅 次回：<b>${jpDate(ts.nextAt.date)}</b> に ${menuLabel(ts.next)} ${h(dayTitle(ts.next))}</p>
+        <button class="btn block" data-act="go" data-tab="train">メニューを見る</button>`}
+      ${lastW ? `<p class="muted">前回: ${jpDate(lastW.date)} ${h(lastW.dayName)}</p>` : ''}</div>`;
     return html;
   },
 
@@ -842,11 +1014,32 @@ const VIEWS = {
   train() {
     const plan = currentPlan();
     const ws = sortedWorkouts().reverse();
-    const next = nextPlanDay();
-    let html = `<div class="btn-grid">
-      <button class="btn primary" data-act="startWorkout">🏋️ 筋トレを記録</button>
-      <button class="btn" data-act="startCardio">🏃 有酸素だけ記録</button>
-    </div>`;
+    const ts = trainStatus();
+    let html = '';
+    // 今日のメニュー
+    if (ts.state === 'go') {
+      html += `<div class="card day-card"><h3>💪 今日のメニュー</h3>${todayAdjustHtml()}${dayCardHtml(adjustDay(ts.today), { primary: true, today: true, buttonText: 'このメニューで記録を始める' })}</div>`;
+    } else if (ts.state === 'done') {
+      html += `<div class="card rest-card"><h3>✅ 今日のメニュー：トレーニング済み</h3>
+        <p class="small">今日は「${h(ts.todayW.dayName)}」をやりました。おつかれさまでした！<br>今日は<b>体を休ませて、超回復を待ちましょう</b>。${SUPER}</p>
+        <ul class="plain small"><li>たんぱく質をしっかり（今日の目標までとりましょう）</li><li>睡眠は7時間くらいとると回復が早くなります</li></ul></div>`;
+    } else {
+      html += `<div class="card rest-card"><h3>🛌 今日のメニュー：休養日</h3>
+        <p class="small">前回（${jpDate(ts.last.date)}「${h(ts.last.dayName)}」）で使った筋肉を休ませて、<b>超回復を待ちましょう</b>。${SUPER}</p>
+        <p class="small">次は <b>${jpDate(ts.nextAt.date)}</b> がおすすめです。</p>
+        <button class="btn sm" data-act="startWorkout">それでも今日やる（${menuLabel(ts.next)}）</button></div>`;
+    }
+    // 次回のメニュー
+    html += `<div class="card day-card"><div class="spread"><h3>📅 次回のメニュー</h3></div>
+      <p class="small" style="margin-top:0"><b>${jpDate(ts.nextAt.date)}</b> に行くのがおすすめ${ts.nextAt.why ? `<span class="muted">（${h(ts.nextAt.why)}から計算）</span>` : ''}</p>
+      ${dayCardHtml(ts.next, { compact: ts.state === 'go', button: ts.state !== 'go' })}</div>`;
+    html += `<button class="btn block" data-act="startCardio" style="margin-bottom:12px">🏃 有酸素運動だけ記録する</button>`;
+    // すべてのメニュー
+    html += `<div class="card"><details><summary>すべてのメニューを見る（${plan.days.length}種類を順番に回します）</summary>
+      <p class="muted">メニューA→B→C…の順にくり返します。曜日は決めず、行った日に「今日のメニュー」をやればOK。休んだ日があっても続きから始まります。</p>
+      <p class="muted">${plan.source === 'ai' ? `AI作成 ${h(plan.createdAt)}` : '基本メニュー'} ・ 時間：${sessionText()}（設定で変更）</p>
+      ${plan.days.map(d => `<div class="sub-day">${dayCardHtml(d, { compact: true })}</div>`).join('')}
+    </details></div>`;
     const cl = chosenList();
     html += `<div class="card"><h3>やりたい種目を選ぶ</h3>
       <p class="small">${cl.length}種目を選択中（${PARTS.map(([k, l]) => [l, cl.filter(c => c.part === k).length]).filter(x => x[1]).map(([l, n]) => `${l}${n}`).join('・') || 'なし'}）</p>
@@ -855,19 +1048,6 @@ const VIEWS = {
     html += `<div class="card"><h3>筋トレメモから取り込む</h3>
       <p class="small">筋トレメモの記録画面を画面収録（またはスクショ）すると、AIが種目・重さ・回数を読み取ります。今の実力をもとに、AIが重さまで提案できるようになります。</p>
       <button class="btn block" data-act="kmemoGuide">📱 筋トレメモの記録を取り込む</button></div>`;
-    html += `<div class="card"><div class="spread"><h3>今のメニュー</h3><span class="muted">${plan.source === 'ai' ? `AI作成 ${h(plan.createdAt)}` : '基本メニュー'}</span></div>
-      <p class="small" style="margin:0">${plan.days.length}日分のメニューを、1日目→${plan.days.length}日目の順にくり返します。</p>
-      <p class="muted" style="margin:4px 0 0">時間：${sessionText()}（設定で変更）</p></div>`;
-    html += plan.days.map((d, i) => `<div class="card day-card">
-      <div class="day-head"><span class="day-no">${i + 1}日目</span><div class="grow"><div class="day-name">${h(d.name)}${d.name === next.name ? ' <span class="tag">次はこれ</span>' : ''}</div><div class="muted">${h(d.focus || '')}${d.estMin ? ` ・ 約${r0(d.estMin)}分` : ''}</div></div></div>
-      ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${h(e.name)}</div>
-        <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b> ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
-        ${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}
-        ${effectHtml(e.name)}
-        ${e.note ? `<div class="muted">💡 ${h(e.note)}</div>` : ''}</div>`).join('')}
-      ${d.cardio ? `<div class="ex"><div class="ex-name">🏃 有酸素：${h(d.cardio.type)} ${r0(d.cardio.min)}分</div>${d.cardio.note ? `<div class="muted">💡 ${h(d.cardio.note)}</div>` : ''}</div>` : ''}
-      <button class="btn sm block" data-act="startDay" data-i="${i}" style="margin-top:8px">${i + 1}日目のメニューで記録する</button>
-    </div>`).join('');
     html += `<div class="card">
       ${plan.tips?.length ? `<h3>アドバイス</h3><ul class="plain small">${plan.tips.map(t => `<li>${h(t)}</li>`).join('')}</ul>` : ''}
       <div class="grid2" style="margin-top:10px">
@@ -1135,6 +1315,9 @@ function healthGuideHtml() {
 }
 
 // ===================== 種目選び =====================
+// 使い方はYouTubeの検索結果へ（リンク切れせず、マシンの見た目も動画で確認できる）
+const howtoUrl = name => 'https://www.youtube.com/results?search_query=' + encodeURIComponent(`${String(name).replace(/[（()）]/g, ' ').replace(/\s+/g, ' ').trim()} やり方`);
+const howtoLink = (name, text = name) => `<a class="howto" href="${howtoUrl(name)}" target="_blank" rel="noopener">${h(text)}<span class="howto-icon">▶ 使い方</span></a>`;
 function effectHtml(name) {
   const c = catalogFor(name);
   return c ? `<div class="effect"><div>🎯 <b>効く場所</b>：${h(c.where)}</div><div>✨ <b>期待できる変化</b>：${h(c.effect)}</div></div>` : '';
@@ -1142,13 +1325,13 @@ function effectHtml(name) {
 function pickSheet() {
   const chosen = new Set(S.settings.chosen || DEFAULT_CHOSEN);
   openSheet('やりたい種目を選ぶ', `
-    <p class="small">やりたい種目にチェックを入れてください。<span class="tag">胸の丸み</span><span class="tag">腹筋</span>は今の目標に特に効く種目、<span class="tag">見た目の変化大</span>は体の見た目が変わりやすい種目です。</p>
+    <p class="small">やりたい種目にチェックを入れてください。種目名をタップすると、使い方の動画（YouTube）が開きます。<span class="tag">胸の丸み</span><span class="tag">腹筋</span>は今の目標に特に効く種目、<span class="tag">見た目の変化大</span>は体の見た目が変わりやすい種目です。</p>
     ${PARTS.map(([k, l]) => {
       const items = CATALOG.filter(c => c.part === k);
       return `<div class="pick-part"><div class="spread"><h4 style="margin:0">${l}</h4>
         <span><button class="btn sm" data-act="pickPart" data-part="${k}" data-on="1">全部選ぶ</button> <button class="btn sm" data-act="pickPart" data-part="${k}" data-on="0">全部外す</button></span></div>
         ${items.map(c => `<label class="pick ${eqOk(c) ? '' : 'disabled'}"><input type="checkbox" data-pick="${c.id}" data-part="${k}" ${chosen.has(c.id) ? 'checked' : ''} ${eqOk(c) ? '' : 'disabled'}>
-          <div class="grow"><div class="pick-name">${h(c.name)} ${c.goal ? `<span class="tag">${GOAL_TAGS[c.goal]}</span>` : ''}${eqOk(c) ? '' : ' <span class="muted">（器具がないため選べません）</span>'}</div>
+          <div class="grow"><div class="pick-name">${howtoLink(c.name)} ${c.goal ? `<span class="tag">${GOAL_TAGS[c.goal]}</span>` : ''}${beginnerTag(c)}${eqOk(c) ? '' : ' <span class="muted">（器具がないため選べません）</span>'}</div>
           <div class="small">🎯 ${h(c.where)}</div><div class="muted">✨ ${h(c.effect)}</div></div></label>`).join('')}
       </div>`;
     }).join('')}
@@ -1313,9 +1496,12 @@ function planPrompt() {
   const st = S.settings;
   return `あなたは経験豊富なパーソナルトレーナーです。次の利用者のために、週${st.daysPerWeek}回のジムのトレーニングメニュー（${st.daysPerWeek}日分のローテーション）を作ってください。
 【1回にかけられる時間（厳守）】${sessionText()}
-- この時間に収まる種目数・セット数・休憩にしてください（目安: 1種目3セットで約8〜10分）。estMin にその日の合計の目安（分）を入れてください。
+- ジムでは器具の空き待ちや重さの付け替えがあるので、余裕のあるメニューにしてください。見積もりは「ウォームアップ10分＋1種目（3セット）約12分＋腹筋1種目約5分」とし、合計が時間より5〜10分短くなるようにしてください（例: 60分なら3種目＋腹筋1種目）。estMin にその日の合計の目安（分）を入れてください。
+- 各種目の alt には、その器具が混んでいて使えないときの代わりの種目（同じ部位・別の器具。【やりたい種目】以外でも可）を書いてください。
 - ${st.sessionMode === 'weights' ? '有酸素運動はジムでは行いません（ふだんの自転車移動で行っています）。cardio は null にしてください。' : st.sessionMode === 'both' ? `各日に有酸素運動（${num(st.cardioMin) || 20}分）を cardio に入れてください。種類・強さ・タイミング（筋トレの前か後か）を目標に合わせて決めてください。` : `有酸素運動だけのメニューにしてください（exercises は空、cardio に${num(st.cardioMin) || 20}分の内容）。`}
 アマチュアでも安全にできる種目を中心に、目標に直結する種目を優先し、腹筋の目標がある場合は毎回お腹の種目を入れてください。種目名は日本のジムで一般的な呼び方にしてください。
+【種目の順番（重要）】
+- ベンチプレスなど重さを扱う多関節種目（フリーウェイト・スミスマシン）を最初に、次にマシンの多関節種目、その後にマシン・ケーブル・ダンベルの単関節種目（フライ・レイズ・カール等）、腹筋は最後にしてください。
 【重さの提案（重要）】
 - すべての種目に、今日使う重さの目安（weight）を必ず書いてください。
 - 記録がある種目は「種目ごとの実力」の最近の重さ×回数と推定最大重量から、指定の回数をフォームを崩さずできる重さにしてください（目標の回数ぎりぎりで2回ほど余力が残る程度）。
@@ -1338,7 +1524,7 @@ ${strengthText()}
 【最近のトレーニング記録】
 ${recentWorkoutsText()}
 次の形のJSONだけを返してください:
-{"days":[{"name":"A 胸・肩・腹 のような短い名前","focus":"この日の狙い（1文）","estMin":60,"cardio":{"type":"エアロバイク など","min":20,"note":"強さやタイミング"},"exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"今日の重さの目安（例: 40kg）","progression":"重さを上げる条件（例: 3セットとも12回できたら42.5kg）","note":"フォームのコツを短く"}]}],"tips":["全体のアドバイス（2〜4個）"]}`;
+{"days":[{"name":"A 胸・肩・腹 のような短い名前","focus":"この日の狙い（1文）","estMin":60,"cardio":{"type":"エアロバイク など","min":20,"note":"強さやタイミング"},"exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"今日の重さの目安（例: 40kg）","progression":"重さを上げる条件（例: 3セットとも12回できたら42.5kg）","alt":"混んでいたときの代わりの種目","note":"フォームのコツを短く"}]}],"tips":["全体のアドバイス（2〜4個）"]}`;
 }
 
 function kmemoPrompt(count) {
@@ -1364,7 +1550,7 @@ function workoutSheet(w, isNew) {
   const dayIdx = days.findIndex(d => d.name === w.dayName);
   openSheet(isNew ? 'トレーニングを記録' : '記録を編集', `
     <label class="field">日付${dateBox('id="w-date"', w.date)}</label>
-    ${isNew ? `<label class="field">メニュー<select data-in="workoutDay">${days.map((d, i) => `<option value="${i}" ${i === dayIdx ? 'selected' : ''}>${i + 1}日目 ${h(d.name)}</option>`).join('')}
+    ${isNew ? `<label class="field">メニュー<select data-in="workoutDay">${days.map((d, i) => `<option value="${i}" ${i === dayIdx ? 'selected' : ''}>メニュー${'ABCDEFG'[i]} ${h(dayTitle(d))}</option>`).join('')}
       <option value="-1" ${dayIdx < 0 ? 'selected' : ''}>有酸素運動だけ</option></select></label>` : `<p class="small"><b>${h(w.dayName)}</b></p>`}
     <div class="spread" style="margin:6px 0"><span class="small">重さの単位</span>
       <div class="seg" id="w-unit">${['kg', 'lb'].map(u => `<button class="${draft.unit === u ? 'on' : ''}" data-act="workoutUnit" data-u="${u}">${u}</button>`).join('')}</div></div>
@@ -1395,8 +1581,9 @@ function workoutFromPlanDay(day, date = ymd()) {
     exercises: day.exercises.map(e => {
       const last = lastPerf(e.name);
       const n = num(e.sets) || 3;
-      const sets = Array.from({ length: n }, (_, i) => ({ w: last ? (last.sets[i] || last.sets.at(-1)).w : firstNum(e.weight), r: null }));
-      return { name: e.name, reps: e.reps, weight: e.weight || '', target: `${n}×${e.reps}`, sets };
+      // 今日の調整で重さを変えたときは、その重さを入れる
+      const sets = Array.from({ length: n }, (_, i) => ({ w: e.adj && firstNum(e.weight) ? firstNum(e.weight) : last ? (last.sets[i] || last.sets.at(-1)).w : firstNum(e.weight), r: null }));
+      return { name: e.name, reps: e.reps, weight: e.weight || '', target: `${n}×${e.reps}`, alt: altOf(e, day.exercises.map(x => x.name)) || '', sets };
     }),
   };
 }
@@ -1406,7 +1593,8 @@ function renderWorkoutList() {
     const last = lastPerf(e.name, draft.id);
     const hint = overloadHint(e, last, u);
     return `<div class="ex">
-      <div class="spread"><div class="ex-name">${h(e.name)}</div><button class="icon-btn" data-act="workoutDelEx" data-e="${ei}" aria-label="種目を削除">✕</button></div>
+      <div class="spread"><div class="ex-name">${howtoLink(e.name)}</div><button class="icon-btn" data-act="workoutDelEx" data-e="${ei}" aria-label="種目を削除">✕</button></div>
+      ${e.alt ? `<button class="btn sm alt-btn" data-act="workoutSwap" data-e="${ei}">🔁 混んでいたら「${h(e.alt)}」に変える</button>` : ''}
       <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}${e.weight ? ` ・ ${h(e.weight)}${weightLbNote(e.weight, u)}` : ''}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets, u))}` : '前回の記録なし'}</span></div>
       ${hint ? `<div class="hint small">${h(hint)}</div>` : ''}
       <table class="sets"><tr><th>セット</th><th>重さ ${u}</th><th>回数</th><th></th></tr>
@@ -1620,7 +1808,7 @@ const ACT = {
     if (!r?.days?.length) return;
     S.plan = {
       source: 'ai', createdAt: ymd(),
-      days: r.days.map(d => ({ name: String(d.name), focus: d.focus || '', estMin: num(d.estMin), cardio: d.cardio && num(d.cardio.min) ? { type: String(d.cardio.type || '有酸素運動'), min: num(d.cardio.min), note: d.cardio.note || '' } : null, exercises: (d.exercises || []).map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', progression: e.progression || '', note: e.note || '' })) })),
+      days: r.days.map(d => ({ name: String(d.name), focus: d.focus || '', estMin: num(d.estMin), cardio: d.cardio && num(d.cardio.min) ? { type: String(d.cardio.type || '有酸素運動'), min: num(d.cardio.min), note: d.cardio.note || '' } : null, exercises: (d.exercises || []).map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', progression: e.progression || '', alt: e.alt ? String(e.alt) : '', note: e.note || '' })) })),
       tips: r.tips || [],
     };
     await save('plan');
@@ -1686,8 +1874,31 @@ const ACT = {
     render();
     if (confirm(`${n}回分を取り込みました。\nこの記録をもとに、AIで重さ入りのメニューを作りますか？`)) ACT.planAI();
   },
-  startWorkout: () => workoutSheet(workoutFromPlanDay(nextPlanDay()), true),
-  startDay: el => workoutSheet(workoutFromPlanDay(currentPlan().days[+el.dataset.i]), true),
+  startWorkout: () => workoutSheet(workoutFromPlanDay(adjustDay(nextPlanDay())), true),
+  startDay(el) {
+    const day = currentPlan().days[+el.dataset.i];
+    workoutSheet(workoutFromPlanDay(el.dataset.today ? adjustDay(day) : day), true);
+  },
+  async todayAI() {
+    const t = { ...todayInput(), memo: $('#today-memo').value.trim() };
+    const day = nextPlanDay();
+    const r = await runAI('AIが今日のメニューを調整中…', sig => gemini(todayPrompt(day, t), [], sig), 'plan');
+    if (!r?.exercises) return;
+    const aiDay = {
+      ...day, focus: r.focus || day.focus, estMin: num(r.estMin), advice: r.advice || '',
+      cardio: r.cardio && num(r.cardio.min) ? { type: String(r.cardio.type || '有酸素運動'), min: num(r.cardio.min), note: r.cardio.note || '' } : null,
+      exercises: r.exercises.map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', alt: e.alt ? String(e.alt) : '', note: e.note || '', adj: true })),
+    };
+    S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay };
+    await save('today');
+    render();
+    toast('今日のメニューを調整しました');
+  },
+  async todayReset() {
+    S.today = null;
+    await save('today');
+    render();
+  },
   startCardio: () => workoutSheet({ id: uid(), date: ymd(), dayName: '有酸素運動', unit: S.settings.unit, exercises: [], cardio: [{ type: CARDIO_TYPES[0], min: null }] }, true),
   workoutUnit(el) {
     draft.unit = el.dataset.u;
@@ -1704,6 +1915,16 @@ const ACT = {
     draft.exercises.push({ name, reps: '', target: '', sets: last ? last.sets.map(s => ({ w: s.w, r: null })) : [{ w: null, r: null }] });
     $('#w-newex').value = '';
     renderWorkoutList();
+  },
+  workoutSwap(el) {
+    const e = draft.exercises[+el.dataset.e];
+    const [from, to] = [e.name, e.alt];
+    const last = lastPerf(to);
+    const c = catalogFor(to);
+    Object.assign(e, { name: to, alt: from, weight: '', reps: c?.reps || e.reps, target: `${e.sets.length}×${c?.reps || e.reps}` });
+    e.sets = e.sets.map((s, i) => ({ w: last ? (last.sets[i] || last.sets.at(-1)).w : null, r: null }));
+    renderWorkoutList();
+    toast(`「${to}」に変えました（もう一度押すと戻せます）`);
   },
   workoutDelEx: el => { draft.exercises.splice(+el.dataset.e, 1); renderWorkoutList(); },
   workoutAddSet(el) {
@@ -1899,6 +2120,15 @@ const ACT = {
 };
 
 const INPUT = {
+  async todayAdj(el) {
+    const t = todayInput();
+    t[el.dataset.k] = el.dataset.k === 'minutes' ? num(el.value) : el.value;
+    S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay: null };
+    await save('today');
+    const y = window.scrollY;
+    render();
+    window.scrollTo(0, y);
+  },
   ride() {
     const km0 = num($('#r-km').value), min0 = num($('#r-min').value), round = $('#r-round').checked;
     const k = round ? 2 : 1;
