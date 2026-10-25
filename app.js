@@ -484,43 +484,121 @@ function normalizeMeal(r) {
 // ===================== トレーニング =====================
 const ex = (name, sets, reps, rest, note = '') => ({ name, sets, reps, rest, weight: '', note });
 
+// 種目の一覧。group: push=押す / pull=引く / abs=腹 / legs=脚。goal: 目標との関係
+const PARTS = [['chest', '胸'], ['back', '背中'], ['shoulder', '肩'], ['arm', '腕'], ['abs', '腹'], ['legs', '脚・お尻']];
+const GOAL_TAGS = { chest: '胸の丸み', abs: '腹筋', look: '見た目の変化大' };
+const CATALOG = [
+  // 胸
+  { id: 'c1', part: 'chest', group: 'push', eq: 'smith', name: 'インクラインベンチプレス（スミスマシン）', sets: 3, reps: '8-10', rest: '2分', goal: 'chest',
+    where: '大胸筋の上部・肩の前・腕の裏', effect: '胸の上の方に厚みが出て、胸が上向きに丸く盛り上がって見える。「丸みのある胸板」の土台になる種目', note: 'ベンチは30度くらい。鎖骨の下あたりに下ろす' },
+  { id: 'c2', part: 'chest', group: 'push', eq: 'free', name: 'インクラインダンベルプレス', sets: 3, reps: '8-12', rest: '90秒', goal: 'chest',
+    where: '大胸筋の上部', effect: '左右別々に動かすので深く下ろせて、胸の上部をしっかり伸ばして丸みを作れる。左右差の改善にも', note: '下ろしたとき胸がしっかり伸びるところまで' },
+  { id: 'c3', part: 'chest', group: 'push', eq: 'free', name: 'ベンチプレス', sets: 3, reps: '6-10', rest: '2分',
+    where: '大胸筋全体・肩の前・腕の裏', effect: '胸全体のボリュームが増えて、胸板が厚くなる。上半身の筋力の土台', note: '肩甲骨を寄せて胸を張ったまま' },
+  { id: 'c4', part: 'chest', group: 'push', eq: 'machine', name: 'チェストプレス（マシン）', sets: 3, reps: '10-12', rest: '90秒',
+    where: '大胸筋全体', effect: '動く道すじが決まっているので、胸に効かせやすい。最後の追い込みにも向く', note: '胸を張ったまま押す' },
+  { id: 'c5', part: 'chest', group: 'push', eq: 'machine', name: 'ペックフライ（マシン）', sets: 3, reps: '12-15', rest: '60秒',
+    where: '大胸筋の内側・全体', effect: '胸の真ん中の谷間のラインがはっきりして、胸の形が立体的になる', note: '腕で抱きしめるように寄せる' },
+  { id: 'c6', part: 'chest', group: 'push', eq: 'cable', name: 'ケーブルクロスオーバー（下から上へ）', sets: 3, reps: '12-15', rest: '60秒', goal: 'chest',
+    where: '大胸筋の上部・内側', effect: '鎖骨の下の内側が盛り上がり、胸の上部に丸みが出る', note: '胸の上の方で手を寄せる' },
+  { id: 'c7', part: 'chest', group: 'push', eq: 'cable', name: 'ケーブルクロスオーバー（上から下へ）', sets: 3, reps: '12-15', rest: '60秒',
+    where: '大胸筋の下部', effect: '胸の下のラインがくっきりして、胸とお腹の境目がはっきりする', note: 'おへその前で手を寄せる' },
+  { id: 'c8', part: 'chest', group: 'push', eq: 'body', name: 'ディップス（アシストマシン可）', sets: 3, reps: '8-12', rest: '90秒',
+    where: '大胸筋の下部・腕の裏', effect: '胸の下部と腕の裏が鍛えられ、上半身が逆三角形に近づく', note: '少し前かがみになると胸に効く' },
+  // 背中
+  { id: 'b1', part: 'back', group: 'pull', eq: 'machine', name: 'ラットプルダウン', sets: 3, reps: '10-12', rest: '90秒', goal: 'look',
+    where: '背中の広がり（広背筋）', effect: '背中に横幅が出て逆三角形に。ウエストが細く見える', note: '胸に向かって引く' },
+  { id: 'b2', part: 'back', group: 'pull', eq: 'machine', name: 'シーテッドロー（マシン or ケーブル）', sets: 3, reps: '10-12', rest: '90秒',
+    where: '背中の厚み（広背筋・僧帽筋の中部）', effect: '背中が厚くなり、姿勢がよくなって胸が張って見える', note: '肩甲骨を寄せるように引く' },
+  { id: 'b3', part: 'back', group: 'pull', eq: 'free', name: 'ワンハンドダンベルロー', sets: 3, reps: '10-12', rest: '60秒',
+    where: '広背筋・背中の下側', effect: '背中の左右差を整え、引き締まった背中に', note: 'ひじを腰の方へ引く' },
+  { id: 'b4', part: 'back', group: 'pull', eq: 'body', name: '懸垂（アシストマシン可）', sets: 3, reps: '6-10', rest: '90秒', goal: 'look',
+    where: '広背筋・腕', effect: '背中の広がりが一番大きく出る代表的な種目', note: '胸をバーに近づける' },
+  // 肩
+  { id: 's1', part: 'shoulder', group: 'push', eq: 'machine', name: 'ショルダープレス（マシン or ダンベル）', sets: 3, reps: '8-12', rest: '90秒',
+    where: '肩の前・横（三角筋）', effect: '肩が丸く大きくなり、上半身ががっしり見える', note: '腰を反らせすぎない' },
+  { id: 's2', part: 'shoulder', group: 'push', eq: 'free', name: 'サイドレイズ（ダンベル）', sets: 3, reps: '12-15', rest: '60秒', goal: 'look',
+    where: '肩の横（三角筋の中部）', effect: '肩幅が広がり、ウエストが細く・胸板が厚く見える。見た目が一番変わりやすい種目のひとつ', note: '小指側を少し上に、肩の高さまで' },
+  { id: 's3', part: 'shoulder', group: 'push', eq: 'cable', name: 'ケーブルサイドレイズ', sets: 3, reps: '12-15', rest: '60秒',
+    where: '肩の横', effect: '下ろしたときも負荷が抜けず、肩の丸みを作りやすい', note: '片手ずつゆっくり' },
+  { id: 's4', part: 'shoulder', group: 'pull', eq: 'machine', name: 'リアデルトフライ（マシン）', sets: 3, reps: '12-15', rest: '60秒',
+    where: '肩の後ろ（三角筋の後部）', effect: '横から見た肩が丸くなり、猫背が直って胸が張って見える', note: '腕を大きく後ろへ開く' },
+  { id: 's5', part: 'shoulder', group: 'pull', eq: 'cable', name: 'フェイスプル（ケーブル）', sets: 3, reps: '15', rest: '60秒',
+    where: '肩の後ろ・背中の上部', effect: '巻き肩・猫背を防ぎ、胸を張った姿勢になって胸板が目立つ', note: 'ロープを顔の横まで引く' },
+  // 腕
+  { id: 'a1', part: 'arm', group: 'pull', eq: 'free', name: 'ダンベルカール', sets: 3, reps: '10-12', rest: '60秒',
+    where: '力こぶ（上腕二頭筋）', effect: '力こぶが盛り上がり、Tシャツの袖まわりがたくましくなる', note: 'ひじを体の横に固定' },
+  { id: 'a2', part: 'arm', group: 'pull', eq: 'free', name: 'ハンマーカール', sets: 3, reps: '10-12', rest: '60秒',
+    where: '腕の外側・前腕', effect: '腕が正面から見て太くなり、握力も強くなる', note: '親指を上にしたまま上げる' },
+  { id: 'a3', part: 'arm', group: 'push', eq: 'cable', name: 'トライセプスプッシュダウン（ケーブル）', sets: 3, reps: '10-15', rest: '60秒',
+    where: '腕の裏（上腕三頭筋）', effect: '二の腕が引き締まって腕全体が太く見える（腕の太さの約3分の2は裏側）。胸のプレス種目の重さも伸びる', note: 'ひじを動かさずに下へ押す' },
+  // 腹
+  { id: 'ab1', part: 'abs', group: 'abs', eq: 'cable', name: 'ケーブルクランチ', sets: 3, reps: '12-15', rest: '60秒', goal: 'abs',
+    where: '腹筋の上部〜中部（腹直筋）', effect: '重りで負荷をかけられるので、腹筋の凹凸（ブロック）が深く大きくなる', note: 'おへそをのぞき込むように丸める' },
+  { id: 'ab2', part: 'abs', group: 'abs', eq: 'body', name: 'ハンギングレッグレイズ', sets: 3, reps: '8-12', rest: '60秒', goal: 'abs',
+    where: '腹筋の下部', effect: '下腹が鍛えられ、6パックの下の段が見えやすくなる', note: 'ぶら下がって、反動を使わずに脚を上げる' },
+  { id: 'ab3', part: 'abs', group: 'abs', eq: 'body', name: 'レッグレイズ（ベンチ・床）', sets: 3, reps: '10-15', rest: '60秒', goal: 'abs',
+    where: '腹筋の下部', effect: '初心者でもできる下腹の種目。ぽっこりお腹の引き締めに', note: '腰が反らないように' },
+  { id: 'ab4', part: 'abs', group: 'abs', eq: 'body', name: 'アブローラー（膝つき）', sets: 3, reps: '8-12', rest: '60秒', goal: 'abs',
+    where: '腹筋全体・体幹', effect: 'お腹全体を強く引き締め、腹筋の縦のラインもはっきりする', note: '腰を反らせない範囲で転がす' },
+  { id: 'ab5', part: 'abs', group: 'abs', eq: 'body', name: 'リバースクランチ', sets: 3, reps: '12-15', rest: '60秒', goal: 'abs',
+    where: '腹筋の下部', effect: '下腹のぽっこりを引き締める', note: 'お尻を床から少し浮かせる' },
+  { id: 'ab6', part: 'abs', group: 'abs', eq: 'cable', name: 'ケーブルウッドチョップ', sets: 3, reps: '12', rest: '60秒',
+    where: '脇腹（腹斜筋）', effect: 'ウエストのくびれと脇腹のラインが出る', note: '腕ではなく体をひねって引く' },
+  { id: 'ab7', part: 'abs', group: 'abs', eq: 'body', name: 'プランク', sets: 3, reps: '45秒', rest: '45秒',
+    where: '体幹', effect: '体幹が安定して、お腹が内側から締まる', note: '頭からかかとまで一直線' },
+  // 脚・お尻
+  { id: 'l1', part: 'legs', group: 'legs', eq: 'smith', name: 'スクワット（スミスマシン or パワーラック）', sets: 3, reps: '8-10', rest: '2分',
+    where: '太もも・お尻', effect: '体で一番大きい筋肉を使うので代謝が上がり、脂肪が落ちやすくなる', note: '膝とつま先の向きをそろえる' },
+  { id: 'l2', part: 'legs', group: 'legs', eq: 'machine', name: 'レッグプレス', sets: 3, reps: '10-12', rest: '90秒',
+    where: '太ももの前・お尻', effect: '腰への負担が少なく、脚全体を鍛えられる', note: '膝を伸ばしきらない' },
+  { id: 'l3', part: 'legs', group: 'legs', eq: 'free', name: 'ルーマニアンデッドリフト（ダンベル）', sets: 3, reps: '10-12', rest: '90秒',
+    where: '太ももの裏・お尻・背中の下', effect: 'お尻が上がり、後ろ姿が引き締まる', note: '背中を丸めず、お尻を後ろへ引く' },
+  { id: 'l4', part: 'legs', group: 'legs', eq: 'machine', name: 'レッグカール（マシン）', sets: 3, reps: '12-15', rest: '60秒',
+    where: '太ももの裏', effect: '太ももの裏が引き締まり、脚のラインが整う', note: 'ゆっくり戻す' },
+  { id: 'l5', part: 'legs', group: 'legs', eq: 'machine', name: 'レッグエクステンション（マシン）', sets: 3, reps: '12-15', rest: '60秒',
+    where: '太ももの前', effect: '膝の上の筋肉が発達し、脚にメリハリが出る', note: '上で1秒止める' },
+];
+const DEFAULT_CHOSEN = ['c1', 'c2', 'c4', 'c6', 'b1', 'b2', 's2', 's5', 'a1', 'a3', 'ab1', 'ab2', 'ab4'];
+const normName = n => String(n || '').replace(/[（(][^）)]*[）)]/g, '').replace(/\s/g, '');
+const catalogFor = name => CATALOG.find(c => c.name === name) || CATALOG.find(c => normName(c.name) === normName(name));
+const eqOk = c => c.eq === 'body' || S.settings.equipment.includes(c.eq) || (c.id === 'b2' && S.settings.equipment.includes('cable')) || (c.id === 's1' && S.settings.equipment.includes('free'));
+const chosenList = () => CATALOG.filter(c => (S.settings.chosen || DEFAULT_CHOSEN).includes(c.id) && eqOk(c));
+
+function partsLabel(items) {
+  return PARTS.filter(([k]) => items.some(c => c.part === k)).map(([, l]) => l).join('・');
+}
 function defaultPlan(n) {
-  const A = { name: 'A 胸・肩・腹', focus: '胸の上部と全体を厚くする日（胸の丸み）', exercises: [
-    ex('インクラインベンチプレス（スミスマシン）', 3, '8-10', '2分', 'ベンチは30度くらい。胸の上部は丸みの土台'),
-    ex('チェストプレス（マシン）', 3, '10-12', '90秒', '胸を張ったまま押す'),
-    ex('ケーブルクロスオーバー（下から上へ）', 3, '12-15', '60秒', '胸の上の方で手を寄せる'),
-    ex('サイドレイズ（ダンベル）', 3, '12-15', '60秒', '肩幅が出ると胸板が厚く見える'),
-    ex('ケーブルクランチ', 3, '12-15', '60秒', 'おへそをのぞき込むように丸める'),
-    ex('レッグレイズ', 3, '10-15', '60秒', '腰が反らないように'),
-  ] };
-  const B = { name: 'B 脚・腹', focus: '大きい筋肉を使って脂肪を燃やしやすくする日', exercises: [
-    ex('スクワット（スミスマシン or パワーラック）', 3, '8-10', '2分', '膝とつま先の向きをそろえる'),
-    ex('レッグプレス', 3, '10-12', '90秒'),
-    ex('ルーマニアンデッドリフト（ダンベル）', 3, '10-12', '90秒', '背中を丸めず、お尻を後ろへ引く'),
-    ex('レッグカール（マシン）', 3, '12-15', '60秒'),
-    ex('アブローラー（膝つき）', 3, '8-12', '60秒', '腰を反らせない範囲で転がす'),
-    ex('プランク', 3, '45秒', '45秒', '頭からかかとまで一直線'),
-  ] };
-  const C = { name: 'C 背中・胸・腹', focus: '背中で体の厚みを出し、胸をもう一度刺激する日', exercises: [
-    ex('ラットプルダウン', 3, '10-12', '90秒', '胸に向かって引く'),
-    ex('シーテッドロー（マシン or ケーブル）', 3, '10-12', '90秒'),
-    ex('インクラインダンベルプレス', 3, '8-12', '90秒', '下ろしたとき胸がしっかり伸びるところまで'),
-    ex('ペックフライ（マシン）', 3, '12-15', '60秒'),
-    ex('フェイスプル（ケーブル）', 3, '15', '60秒', '姿勢がよくなり胸が張って見える'),
-    ex('リバースクランチ', 3, '12-15', '60秒', '下腹を意識'),
-  ] };
-  const two = [
-    { name: 'A 上半身（胸重点）・腹', focus: '胸の丸みと上半身の厚みをつくる日', exercises: [
-      A.exercises[0], A.exercises[1], A.exercises[2], C.exercises[0], C.exercises[1], A.exercises[3], A.exercises[4],
-    ] },
-    { name: 'B 脚・胸・腹', focus: '脚で代謝を上げつつ胸をもう一度刺激する日', exercises: [
-      B.exercises[0], B.exercises[1], B.exercises[2], C.exercises[2], C.exercises[3], A.exercises[5], B.exercises[5],
-    ] },
-  ];
+  const chosen = chosenList();
+  const by = g => chosen.filter(c => c.group === g);
+  const push = by('push'), pull = by('pull'), legs = by('legs'), abs = by('abs');
+  const chest = push.filter(c => c.part === 'chest');
+  const L = abs.length;
+  // 腹の種目は毎回2つずつ、日ごとに入れ替える。それ以外は1日5種目まで
+  const day = (items, focus, i) => {
+    const absPart = L ? [...new Set([abs[(i * 2) % L], abs[(i * 2 + 1) % L]])] : [];
+    const list = [...new Set(items)].slice(0, 7 - absPart.length).concat(absPart);
+    return items.length ? { name: partsLabel(list), focus, exercises: list.map(c => ex(c.name, c.sets, c.reps, c.rest, c.note)) } : null;
+  };
+  // 胸の目標があるので胸は週2回以上。2回目以降は胸の上部（丸み）の種目を優先
+  const upper = [...chest.filter(c => c.goal === 'chest'), ...chest.filter(c => c.goal !== 'chest')];
+  const shoulderSide = push.filter(c => c.part === 'shoulder');
+  const rest = push.slice(5); // 1日目に入りきらなかった「押す」種目は別の日へ
+  let days;
+  if (n <= 2) {
+    days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day([...pull.slice(0, 3), ...upper.slice(0, 1), ...rest, ...pull.slice(3), ...legs, ...upper.slice(1, 2)], '背中・腕など「引く」筋肉の日。胸ももう一度', 1)];
+  } else if (legs.length) {
+    days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day(legs, '脚の日', 1), day([...pull, ...rest, ...upper.slice(0, 2)], '背中・腕など「引く」筋肉の日。胸ももう一度', 2)];
+  } else {
+    days = [day(push, '胸・肩・腕の裏など「押す」筋肉の日', 0), day(pull, '背中・腕など「引く」筋肉の日', 1), day([...upper.slice(0, 3), ...rest, ...shoulderSide], '胸の丸みを重点的に。胸と肩をもう一度', 2)];
+  }
+  days = days.filter(Boolean);
+  if (!days.length) days = [{ name: '種目が選ばれていません', focus: '「やりたい種目を選ぶ」から種目を選んでください', exercises: [] }];
+  days.forEach((d, i) => { d.name = `${'ABCD'[i]} ${d.name}`; });
   return {
     source: 'default',
     createdAt: ymd(),
-    days: n <= 2 ? two : [A, B, C],
+    days,
     tips: [
       '腹筋を割るには「腹筋運動」より「体脂肪を減らす」ことが大事。食事の目標カロリーを守りましょう。',
       '胸の丸みは大胸筋の上部が決め手。インクライン（斜め）の種目を毎週欠かさずに。',
@@ -542,7 +620,7 @@ function lastPerf(name, beforeId) {
   const ws = sortedWorkouts().reverse();
   for (const w of ws) {
     if (w.id === beforeId) continue;
-    const e = w.exercises.find(x => x.name === name);
+    const e = w.exercises.find(x => x.name === name) || w.exercises.find(x => normName(x.name) === normName(name));
     if (e && e.sets.length) return { date: w.date, sets: e.sets };
   }
   return null;
@@ -718,6 +796,11 @@ const VIEWS = {
       <button class="btn primary" data-act="startWorkout">🏋️ 筋トレを記録</button>
       <button class="btn" data-act="startCardio">🏃 有酸素だけ記録</button>
     </div>`;
+    const cl = chosenList();
+    html += `<div class="card"><h3>やりたい種目を選ぶ</h3>
+      <p class="small">${cl.length}種目を選択中（${PARTS.map(([k, l]) => [l, cl.filter(c => c.part === k).length]).filter(x => x[1]).map(([l, n]) => `${l}${n}`).join('・') || 'なし'}）</p>
+      <p class="muted">種目ごとに「どこに効くか」「どんな変化が期待できるか」を見ながら選べます。基本メニューもAIのメニューも、選んだ種目だけで作ります。</p>
+      <button class="btn block" data-act="pickExercises">📋 種目を選ぶ・効果を見る</button></div>`;
     html += `<div class="card"><h3>筋トレメモから取り込む</h3>
       <p class="small">筋トレメモの記録画面を画面収録（またはスクショ）すると、AIが種目・重さ・回数を読み取ります。今の実力をもとに、AIが重さまで提案できるようになります。</p>
       <button class="btn block" data-act="kmemoGuide">📱 筋トレメモの記録を取り込む</button></div>`;
@@ -728,7 +811,8 @@ const VIEWS = {
       ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${h(e.name)}</div>
         <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b> ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
         ${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}
-        ${e.note ? `<div class="muted">${h(e.note)}</div>` : ''}</div>`).join('')}
+        ${effectHtml(e.name)}
+        ${e.note ? `<div class="muted">💡 ${h(e.note)}</div>` : ''}</div>`).join('')}
       <button class="btn sm block" data-act="startDay" data-i="${i}" style="margin-top:8px">${i + 1}日目のメニューで記録する</button>
     </div>`).join('');
     html += `<div class="card">
@@ -803,9 +887,9 @@ const VIEWS = {
         : '<p class="muted">自転車の記録画面で「よく使うルートとして保存」を選ぶと、ここに追加されます。</p>'}
     </div>
 
-    <div class="card"><h3>Apple ヘルスケア</h3>
-      <p class="small">Apple Watchのサイクリングの距離を、ショートカット経由で取り込めます。</p>
-      <button class="btn block" data-act="healthGuide">ショートカットの作り方を見る</button>
+    <div class="card"><h3>Apple Watch</h3>
+      <p class="small">サイクリングの記録を、フィットネスアプリのスクショか、ショートカットで取り込めます。ショートカットの作り方もこの中にあります。</p>
+      <button class="btn block" data-act="healthImport">⌚ 取り込み方・ショートカットの作り方を見る</button>
     </div>
 
     <div class="card"><h3>ジムで使える器具</h3>
@@ -983,6 +1067,41 @@ function healthGuideHtml() {
   <p class="muted">ショートカットはホーム画面に置いたり、「オートメーション」で毎晩自動で動かしたりもできます。Apple Watchで記録した日は、ホーム画面のルートボタンを押すと二重になるので押さないでください。</p>`;
 }
 
+// ===================== 種目選び =====================
+function effectHtml(name) {
+  const c = catalogFor(name);
+  return c ? `<div class="effect"><div>🎯 <b>効く場所</b>：${h(c.where)}</div><div>✨ <b>期待できる変化</b>：${h(c.effect)}</div></div>` : '';
+}
+function pickSheet() {
+  const chosen = new Set(S.settings.chosen || DEFAULT_CHOSEN);
+  openSheet('やりたい種目を選ぶ', `
+    <p class="small">やりたい種目にチェックを入れてください。<span class="tag">胸の丸み</span><span class="tag">腹筋</span>は今の目標に特に効く種目、<span class="tag">見た目の変化大</span>は体の見た目が変わりやすい種目です。</p>
+    ${PARTS.map(([k, l]) => {
+      const items = CATALOG.filter(c => c.part === k);
+      return `<div class="pick-part"><div class="spread"><h4 style="margin:0">${l}</h4>
+        <span><button class="btn sm" data-act="pickPart" data-part="${k}" data-on="1">全部選ぶ</button> <button class="btn sm" data-act="pickPart" data-part="${k}" data-on="0">全部外す</button></span></div>
+        ${items.map(c => `<label class="pick ${eqOk(c) ? '' : 'disabled'}"><input type="checkbox" data-pick="${c.id}" data-part="${k}" ${chosen.has(c.id) ? 'checked' : ''} ${eqOk(c) ? '' : 'disabled'}>
+          <div class="grow"><div class="pick-name">${h(c.name)} ${c.goal ? `<span class="tag">${GOAL_TAGS[c.goal]}</span>` : ''}${eqOk(c) ? '' : ' <span class="muted">（器具がないため選べません）</span>'}</div>
+          <div class="small">🎯 ${h(c.where)}</div><div class="muted">✨ ${h(c.effect)}</div></div></label>`).join('')}
+      </div>`;
+    }).join('')}
+    <button class="btn primary block" data-act="pickSave">この種目で決定</button>`);
+}
+
+// ===================== Apple Watchのスクショ読み取り =====================
+function watchPrompt(count) {
+  const wd = '日月火水木金土'[new Date().getDay()];
+  return `これはiPhoneのフィットネスアプリ・ヘルスケアアプリ・Apple Watchのワークアウト記録の画面です（${count}枚。同じ記録が重なって写っていることがあります）。
+サイクリング（屋外・室内とも）の記録だけを、1回のワークアウトごとに読み取ってください。
+- 同じ記録が重なって写っている場合は1回にまとめる
+- 年が無い日付は、今日（${ymd()}・${wd}曜日）以前で一番近い日付にする。「今日」「昨日」「月曜日」などの表記も日付に直す
+- 読めない値は null。推測で数字を作らない
+- 距離がマイルなら km に換算する。時間は分にする（例: 0:32:10 → 32）
+- kcal は「アクティブカロリー」（無ければ「カロリー」）
+次の形のJSONだけを返してください:
+{"rides":[{"date":"YYYY-MM-DD","km":数値,"min":数値,"kcal":数値}],"note":"読み取りで気になった点があれば1文"}`;
+}
+
 // ===================== 自転車のカードとシート =====================
 function rideCardHtml() {
   const today = ridesOn(ymd());
@@ -994,7 +1113,7 @@ function rideCardHtml() {
     ${routes.length ? `<div class="row wrap" style="margin:8px 0">${routes.map((r, i) => `<button class="btn sm" data-act="rideRoute" data-i="${i}">${h(r.name)} ${r1(r.round ? r.km * 2 : r.km)}km</button>`).join('')}</div>` : ''}
     <div class="grid2">
       <button class="btn" data-act="rideNew">＋ 距離を入れる</button>
-      <button class="btn" data-act="healthImport">⌚ Apple Watchから</button>
+      <button class="btn" data-act="healthImport">⌚ Apple Watchから取り込む</button>
     </div>
     <p class="muted">${rideWeekText()}</p>
   </div>`;
@@ -1133,13 +1252,16 @@ function planPrompt() {
 - すべての種目に、今日使う重さの目安（weight）を必ず書いてください。
 - 記録がある種目は「種目ごとの実力」の最近の重さ×回数と推定最大重量から、指定の回数をフォームを崩さずできる重さにしてください（目標の回数ぎりぎりで2回ほど余力が残る程度）。
 - 記録が無い種目は、近い種目の記録から推定し「◯kg前後（初回は軽めで確認）」のように書いてください。自重種目は「自重」と書いてください。
-- 記録に同じ種目がある場合は、記録と同じ種目名を使ってください（記録とメニューをつなげるため）。
+- 種目は【やりたい種目】の中からだけ選び、名前もそのまま使ってください。記録の中で呼び方が違う同じ種目があれば、その重さを参考にしてください。
 - progression には「何回できたら何kg上げるか」を書いてください。
 【利用者の情報】
 ${profileText()}
 【なりたい体・目標】
 ${goalsText()}
 【使える器具】${equipmentText()}
+【やりたい種目（この中からだけ選ぶ）】
+${chosenList().map(c => `- ${c.name}（${c.where}）`).join('\n')}
+【やらない部位】${PARTS.filter(([k]) => !chosenList().some(c => c.part === k)).map(([, l]) => l).join('、') || 'なし'}
 【ふだんの自転車移動】${rideWeekText()}
 【体の写真の分析】
 ${latestAnalysisText()}
@@ -1544,20 +1666,66 @@ const ACT = {
 
   // ---- 自転車 ----
   rideNew: () => rideSheet(),
-  async healthImport() {
-    if (!S.settings.healthSetup) { ACT.healthGuide(); return; }
+  healthImport: () => openSheet('Apple Watchの記録を取り込む', `
+    <p class="small">取り込み方は2つあります。どちらか使いやすい方を選んでください。</p>
+    <h4 class="method">方法1：スクショで取り込む（準備なし）</h4>
+    <ol class="small">
+      <li>iPhoneの「<b>フィットネス</b>」アプリを開く</li>
+      <li>「ワークアウト」の一覧（サイクリングの記録が日付ごとに並んでいる画面）を開く</li>
+      <li>サイクリングの記録が写るように<b>スクショ</b>を撮る（何枚でもOK。画面収録でスクロールしてもOK）</li>
+      <li>下のボタンで、そのスクショを選ぶ</li>
+    </ol>
+    <p class="muted">距離・時間・消費カロリーをAIが読み取ります。Apple Watchが測った消費カロリーをそのまま使うので、計算より正確です。</p>
+    <button class="btn primary block" data-act="watchPick">スクショを選ぶ</button>
+    <h4 class="method">方法2：ショートカットで取り込む（最初に1回作れば、毎回ボタン1つ）</h4>
+    <details class="small"><summary>ショートカットの作り方を開く（タップ）</summary>${healthGuideHtml()}</details>
+    <button class="btn block" data-act="healthPaste" style="margin-top:8px">ショートカットでコピーした記録を取り込む</button>`),
+  async watchPick() {
+    const files = await pickPhotos(true, 'image/*,video/*');
+    if (!files.length) return;
+    let imgs;
+    busy(true, '画像を準備中…');
+    try { imgs = await filesToImages(files, 1600, 12, 12); }
+    catch (e) { alert(e.message || '画像を読み込めませんでした'); return; }
+    finally { busy(false); }
+    const r = await runAI('AIがワークアウトを読み取り中…', sig => gemini(watchPrompt(imgs.length), imgs, sig), 'body', imgs.length);
+    if (!r) return;
+    const rides = (r.rides || []).filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') && num(x.km) > 0);
+    if (!rides.length) { alert('サイクリングの記録を読み取れませんでした。距離と日付が写っている画面で試してください。'); return; }
+    const list = rides.map(x => `${jpDate(x.date)} ${r1(num(x.km))}km${num(x.min) ? ` ${r0(num(x.min))}分` : ''}${num(x.kcal) ? ` ${r0(num(x.kcal))}kcal` : ''}`).join('\n');
+    if (!confirm(`${rides.length}件のサイクリングを読み取りました。\n\n${list}\n${r.note ? '\n（AIのメモ: ' + r.note + '）\n' : ''}\n取り込みますか？`)) return;
+    for (const x of rides) {
+      const km = Math.round(num(x.km) * 100) / 100;
+      const ride = { id: `aw-${x.date}-${km}`, date: x.date, km, min: num(x.min), bike: S.settings.bike, label: 'Apple Watch', source: 'watch', created: Date.now() };
+      ride.kcal = num(x.kcal) ? Math.round(num(x.kcal)) : rideKcal(km, ride.min, ride.bike);
+      // 同じワークアウトの読み直しと、ショートカットで入れた同じ日の分は置き換える
+      S.rides = S.rides.filter(y => y.id !== ride.id && y.id !== 'hk-' + x.date);
+      S.rides.push(ride);
+    }
+    await save('rides');
+    closeSheet();
+    toast(`${rides.length}件取り込みました`);
+    render();
+  },
+  async healthPaste() {
     let text = '';
     try { text = await navigator.clipboard.readText(); } catch {}
     if (!/BODYMAKE/i.test(text)) text = prompt('コピーした内容を貼り付けてください（長押し→ペースト）', '') || '';
     if (text) importHealth(text);
   },
-  healthGuide: () => openSheet('Apple Watchの記録を取り込む', healthGuideHtml() + `
-    <button class="btn primary block" data-act="healthReady">ショートカットを作った・取り込む</button>`),
-  async healthReady() {
-    S.settings.healthSetup = true;
+  pickExercises: () => pickSheet(),
+  pickPart(el) {
+    $$(`input[data-part="${el.dataset.part}"]:not(:disabled)`).forEach(i => { i.checked = el.dataset.on === '1'; });
+  },
+  async pickSave() {
+    const ids = $$('input[data-pick]:checked').map(i => i.dataset.pick);
+    if (!ids.length) { alert('種目を1つ以上選んでください'); return; }
+    S.settings.chosen = ids;
     await save('settings');
     closeSheet();
-    ACT.healthImport();
+    render();
+    if (S.plan?.source === 'ai' && confirm('選んだ種目でAIのメニューを作り直しますか？\n（「キャンセル」なら今のAIメニューのまま。基本メニューに戻すと、選んだ種目ですぐに組み直されます）')) ACT.planAI();
+    else toast('保存しました');
   },
   async rideRoute(el) {
     const r = S.settings.routes[+el.dataset.i];
