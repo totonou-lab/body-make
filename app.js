@@ -24,7 +24,7 @@ const BODY_FIELDS = [
   ['score', 'InBody点数', '点'],
 ];
 
-const CARDIO_TYPES = ['トレッドミル（ウォーキング・ランニング）', 'エアロバイク', 'クロストレーナー', 'ステアクライマー（階段）', 'ローイング', 'その他'];
+const CARDIO_TYPES = ['ランニング（屋外）', 'ウォーキング（屋外）', 'トレッドミル（ウォーキング・ランニング）', 'エアロバイク', 'クロストレーナー', 'ステアクライマー（階段）', 'ローイング', 'その他'];
 const LB = 2.20462;
 const BIKES = [['normal', '普通の自転車（ママチャリ・クロスバイク）'], ['assist', '電動アシスト自転車'], ['road', 'ロードバイク']];
 
@@ -387,12 +387,14 @@ function rideKcal(km, min, bike) {
 }
 const ridesOn = date => S.rides.filter(r => r.date === date);
 const rideKcalOn = date => ridesOn(date).reduce((a, r) => a + r.kcal, 0);
-// その日の目標: 自転車で使った分を炭水化物として上乗せ
+// 有酸素運動は消費kcalが入っているもの（Apple Watchやマシンの表示）だけ足す
+const cardioKcalOn = date => S.workouts.filter(w => w.date === date).reduce((a, w) => a + (w.cardio || []).reduce((b, c) => b + (num(c.kcal) || 0), 0), 0);
+// その日の目標: 自転車と有酸素運動で使った分を炭水化物として上乗せ
 function targetsOn(date) {
   const t = targets();
   if (!t) return null;
-  const extra = rideKcalOn(date);
-  return { ...t, kcal: t.kcal + extra, carbs: t.carbs + extra / 4, ride: extra };
+  const ride = rideKcalOn(date), cardio = cardioKcalOn(date), extra = ride + cardio;
+  return { ...t, kcal: t.kcal + extra, carbs: t.carbs + extra / 4, ride, cardio, extra };
 }
 function rideWeekText() {
   const from = addDays(ymd(), -6);
@@ -698,7 +700,7 @@ const VIEWS = {
     html += `<div class="card"><h3>今日の食事</h3>
       ${t ? bar('カロリー', tot.kcal, t.kcal, 'kcal') + bar('たんぱく質', tot.protein, t.protein, 'g')
         : '<p class="muted">体重を一度記録すると、1日の目標カロリーが出ます。</p>'}
-      ${t ? `<p class="muted">あと ${r0(Math.max(0, t.kcal - tot.kcal))} kcal・たんぱく質 ${r0(Math.max(0, t.protein - tot.protein))} g${t.ride ? `（自転車の ${t.ride}kcal を目標に足しています）` : ''}</p>` : ''}
+      ${t ? `<p class="muted">あと ${r0(Math.max(0, t.kcal - tot.kcal))} kcal・たんぱく質 ${r0(Math.max(0, t.protein - tot.protein))} g${t.extra ? `（${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} を目標に足しています）` : ''}</p>` : ''}
     </div>`;
     html += rideCardHtml();
     html += `<div class="card"><h3>目標</h3><ul class="plain">${st.goals.map(x => `<li>${h(x)}</li>`).join('')}</ul>
@@ -730,7 +732,7 @@ const VIEWS = {
       ${bar('たんぱく質', tot.protein, t?.protein, 'g')}
       ${bar('脂質', tot.fat, t?.fat, 'g')}
       ${bar('炭水化物', tot.carbs, t?.carbs, 'g')}
-      ${t?.ride ? `<p class="muted">🚲 この日の自転車 ${t.ride}kcal 分を目標に足しています</p>` : ''}
+      ${t?.extra ? `<p class="muted">🚲🏃 この日の${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} 分を目標に足しています</p>` : ''}
     </div>`;
     html += `<div class="btn-grid">
       <button class="btn primary" data-act="mealPhoto">📷 写真で記録</button>
@@ -1048,7 +1050,7 @@ function healthGuideHtml() {
     <li>「ショートカット」アプリを開き、右上の「＋」を押す</li>
     <li>上の名前を「<b>bodymake用にコピー</b>」に変える</li>
     <li>「アクションを検索」で <b>ヘルスケアサンプルを検索</b> を追加し、次のように設定
-      <ul><li>種類：<b>サイクリングの距離</b></li><li>「開始日」が「<b>過去 7 日以内</b>」</li><li>「グループ化」があれば「<b>日</b>」（無ければそのままでOK）</li></ul></li>
+      <ul><li>⚠️ よく似た「ヘルスケアサンプルを<b>記録</b>」は書き込み用なので使わない（追加してしまったら✕で消す）</li><li>種類：<b>自転車の走行距離</b>（iOSによっては「サイクリングの距離」）</li><li>「開始日」が「<b>過去 7 日以内</b>」</li><li>「グループ化」があれば「<b>日</b>」（無ければそのままでOK）</li></ul></li>
     <li><b>各項目を繰り返す</b> を追加（入力が「ヘルスケアサンプル」になっていればOK）</li>
     <li>繰り返しの中に <b>日付をフォーマット</b> を追加
       <ul><li>日付の欄をタップ →「繰り返し項目」を選び、もう一度タップして「<b>開始日</b>」を選ぶ</li><li>日付フォーマット：「カスタム」→ <b>yyyy-MM-dd</b> と入力</li><li>時刻フォーマット：「なし」</li></ul></li>
@@ -1092,14 +1094,14 @@ function pickSheet() {
 function watchPrompt(count) {
   const wd = '日月火水木金土'[new Date().getDay()];
   return `これはiPhoneのフィットネスアプリ・ヘルスケアアプリ・Apple Watchのワークアウト記録の画面です（${count}枚。同じ記録が重なって写っていることがあります）。
-サイクリング（屋外・室内とも）の記録だけを、1回のワークアウトごとに読み取ってください。
+サイクリング・ランニング・ウォーキング（屋外・室内とも）の記録を、1回のワークアウトごとに読み取ってください。それ以外の種類（筋トレなど）は読まないでください。
 - 同じ記録が重なって写っている場合は1回にまとめる
 - 年が無い日付は、今日（${ymd()}・${wd}曜日）以前で一番近い日付にする。「今日」「昨日」「月曜日」などの表記も日付に直す
 - 読めない値は null。推測で数字を作らない
 - 距離がマイルなら km に換算する。時間は分にする（例: 0:32:10 → 32）
 - kcal は「アクティブカロリー」（無ければ「カロリー」）
 次の形のJSONだけを返してください:
-{"rides":[{"date":"YYYY-MM-DD","km":数値,"min":数値,"kcal":数値}],"note":"読み取りで気になった点があれば1文"}`;
+{"workouts":[{"type":"cycling か running か walking","indoor":true か false,"date":"YYYY-MM-DD","km":数値,"min":数値,"kcal":数値}],"note":"読み取りで気になった点があれば1文"}`;
 }
 
 // ===================== 自転車のカードとシート =====================
@@ -1669,10 +1671,11 @@ const ACT = {
   healthImport: () => openSheet('Apple Watchの記録を取り込む', `
     <p class="small">取り込み方は2つあります。どちらか使いやすい方を選んでください。</p>
     <h4 class="method">方法1：スクショで取り込む（準備なし）</h4>
+    <p class="small">サイクリング・ランニング・ウォーキングのワークアウトをまとめて取り込めます。</p>
     <ol class="small">
       <li>iPhoneの「<b>フィットネス</b>」アプリを開く</li>
-      <li>「ワークアウト」の一覧（サイクリングの記録が日付ごとに並んでいる画面）を開く</li>
-      <li>サイクリングの記録が写るように<b>スクショ</b>を撮る（何枚でもOK。画面収録でスクロールしてもOK）</li>
+      <li>「ワークアウト」の一覧（ワークアウトが日付ごとに並んでいる画面）を開く</li>
+      <li>記録が写るように<b>スクショ</b>を撮る（何枚でもOK。画面収録でスクロールしてもOK）</li>
       <li>下のボタンで、そのスクショを選ぶ</li>
     </ol>
     <p class="muted">距離・時間・消費カロリーをAIが読み取ります。Apple Watchが測った消費カロリーをそのまま使うので、計算より正確です。</p>
@@ -1690,10 +1693,22 @@ const ACT = {
     finally { busy(false); }
     const r = await runAI('AIがワークアウトを読み取り中…', sig => gemini(watchPrompt(imgs.length), imgs, sig), 'body', imgs.length);
     if (!r) return;
-    const rides = (r.rides || []).filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') && num(x.km) > 0);
-    if (!rides.length) { alert('サイクリングの記録を読み取れませんでした。距離と日付が写っている画面で試してください。'); return; }
-    const list = rides.map(x => `${jpDate(x.date)} ${r1(num(x.km))}km${num(x.min) ? ` ${r0(num(x.min))}分` : ''}${num(x.kcal) ? ` ${r0(num(x.kcal))}kcal` : ''}`).join('\n');
-    if (!confirm(`${rides.length}件のサイクリングを読み取りました。\n\n${list}\n${r.note ? '\n（AIのメモ: ' + r.note + '）\n' : ''}\n取り込みますか？`)) return;
+    const all = (r.workouts || r.rides || []).filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') && (num(x.km) > 0 || num(x.min) > 0));
+    if (!all.length) { alert('ワークアウトの記録を読み取れませんでした。種類・日付・距離が写っている画面で試してください。'); return; }
+    const rides = all.filter(x => (x.type || 'cycling') === 'cycling' && num(x.km) > 0);
+    const others = all.filter(x => x.type === 'running' || x.type === 'walking');
+    const label = x => x.type === 'running' ? (x.indoor ? 'トレッドミル（ウォーキング・ランニング）' : 'ランニング（屋外）') : x.type === 'walking' ? (x.indoor ? 'トレッドミル（ウォーキング・ランニング）' : 'ウォーキング（屋外）') : 'サイクリング';
+    const list = [...rides, ...others].map(x => `${jpDate(x.date)} ${x.type === 'running' ? '🏃' : x.type === 'walking' ? '🚶' : '🚲'} ${num(x.km) ? r1(num(x.km)) + 'km' : ''}${num(x.min) ? ` ${r0(num(x.min))}分` : ''}${num(x.kcal) ? ` ${r0(num(x.kcal))}kcal` : ''}`).join('\n');
+    if (!confirm(`${rides.length + others.length}件のワークアウトを読み取りました。\n\n${list}\n${r.note ? '\n（AIのメモ: ' + r.note + '）\n' : ''}\n取り込みますか？`)) return;
+    // ランニング・ウォーキングは、その日の「有酸素運動（Apple Watch）」の記録にまとめる
+    for (const x of others) {
+      const id = 'awc-' + x.date;
+      let w = S.workouts.find(y => y.id === id);
+      if (!w) { w = { id, date: x.date, dayName: '有酸素運動（Apple Watch）', exercises: [], cardio: [], created: parseYmd(x.date).getTime() }; S.workouts.push(w); }
+      const c = { type: label(x), min: num(x.min) ? Math.round(num(x.min)) : null, km: num(x.km), kcal: num(x.kcal) ? Math.round(num(x.kcal)) : null };
+      const key = y => `${y.type}|${y.km}|${y.min}`;
+      if (!w.cardio.some(y => key(y) === key(c))) w.cardio.push(c);
+    }
     for (const x of rides) {
       const km = Math.round(num(x.km) * 100) / 100;
       const ride = { id: `aw-${x.date}-${km}`, date: x.date, km, min: num(x.min), bike: S.settings.bike, label: 'Apple Watch', source: 'watch', created: Date.now() };
@@ -1702,9 +1717,9 @@ const ACT = {
       S.rides = S.rides.filter(y => y.id !== ride.id && y.id !== 'hk-' + x.date);
       S.rides.push(ride);
     }
-    await save('rides');
+    await save('rides', 'workouts');
     closeSheet();
-    toast(`${rides.length}件取り込みました`);
+    toast(`${rides.length + others.length}件取り込みました`);
     render();
   },
   async healthPaste() {
