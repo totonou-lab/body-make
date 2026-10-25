@@ -28,7 +28,7 @@ const CARDIO_TYPES = ['トレッドミル（ウォーキング・ランニング
 const LB = 2.20462;
 const BIKES = [['normal', '普通の自転車（ママチャリ・クロスバイク）'], ['assist', '電動アシスト自転車'], ['road', 'ロードバイク']];
 
-const SOURCES = { inbody: 'InBody', tanita: 'タニタ', manual: '手入力' };
+const SOURCES = { inbody: 'InBody', tanita: 'タニタ', manual: '手入力', health: 'ヘルスケア' };
 
 const MODES = [
   ['cut', '引き締め（脂肪を落とす）'],
@@ -803,6 +803,11 @@ const VIEWS = {
         : '<p class="muted">自転車の記録画面で「よく使うルートとして保存」を選ぶと、ここに追加されます。</p>'}
     </div>
 
+    <div class="card"><h3>Apple ヘルスケア</h3>
+      <p class="small">Apple Watchのサイクリングの距離を、ショートカット経由で取り込めます。</p>
+      <button class="btn block" data-act="healthGuide">ショートカットの作り方を見る</button>
+    </div>
+
     <div class="card"><h3>ジムで使える器具</h3>
       ${EQUIPMENT.map(([k, l]) => `<label class="check"><input type="checkbox" data-eq="${k}" ${st.equipment.includes(k) ? 'checked' : ''}>${h(l)}</label>`).join('')}
       <label class="field">ふだんの重さの単位（記録画面でジムごとに切り替えもできます）<select data-set="unit">${opt([['kg', 'kg（キログラム）'], ['lb', 'lb（ポンド）']], st.unit)}</select></label>
@@ -902,6 +907,82 @@ function newMeal(fields) {
   return { id: uid(), date: mealDate, type: defaultMealType(), name: '', items: [], note: '', thumb: '', ...fields };
 }
 
+// ===================== Apple ヘルスケアから（ショートカット経由） =====================
+// 1行目に BODYMAKE、続けて「種類,日付,値」（c=サイクリングkm, w=体重kg, f=体脂肪率%）
+function parseHealthText(text) {
+  const lines = String(text || '').split(/\r?\n|;/).map(s => s.trim()).filter(Boolean);
+  if (!lines.length || !/BODYMAKE/i.test(lines[0])) return null;
+  const out = { c: {}, w: {}, f: {} };
+  for (const line of lines.slice(1)) {
+    const [type, date, value] = line.split(/[,，、]/).map(s => s.trim());
+    const m = (date || '').match(/(\d{4})[-\/年.](\d{1,2})[-\/月.](\d{1,2})/);
+    let v = firstNum(value);
+    const t = (type || '').toLowerCase();
+    if (!m || v == null || !out[t]) continue;
+    const d = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    if (t === 'c') out.c[d] = (out.c[d] || 0) + v;
+    else {
+      if (t === 'f' && v < 1) v *= 100; // 0.147 のような割合表記にも対応
+      out[t][d] = v;
+    }
+  }
+  return out;
+}
+
+async function importHealth(text) {
+  const d = parseHealthText(text);
+  if (!d) {
+    alert('ショートカットのデータが見つかりませんでした。\n先にショートカットを実行してから、もう一度押してください。');
+    return;
+  }
+  const cDates = Object.keys(d.c).filter(k => d.c[k] > 0).sort();
+  const bDates = [...new Set([...Object.keys(d.w), ...Object.keys(d.f)])].sort()
+    .filter(k => !S.body.some(b => b.date === k));
+  if (!cDates.length && !bDates.length) { alert('取り込める新しいデータはありませんでした（直近にサイクリングの記録がないか、取り込み済みです）。'); return; }
+  const lines = [];
+  if (cDates.length) lines.push(`🚲 サイクリング ${cDates.length}日分（合計 ${r1(cDates.reduce((a, k) => a + d.c[k], 0))}km）`);
+  if (bDates.length) lines.push(`⚖️ 体重・体脂肪率 ${bDates.length}日分`);
+  if (!confirm(`Apple ヘルスケアのデータを取り込みますか？\n\n${lines.join('\n')}\n\n同じ日のApple Watchの記録は新しい値で置き換えます。`)) return;
+  for (const k of cDates) {
+    const km = Math.round(d.c[k] * 100) / 100;
+    const ride = { id: 'hk-' + k, date: k, km, min: null, bike: S.settings.bike, label: 'Apple Watch', source: 'health', created: Date.now() };
+    ride.kcal = rideKcal(km, null, ride.bike);
+    S.rides = S.rides.filter(r => r.id !== ride.id);
+    S.rides.push(ride);
+  }
+  for (const k of bDates) {
+    S.body.push({ id: 'hk-b-' + k, date: k, source: 'health', weight: d.w[k] ?? null, fatPct: d.f[k] ?? null, extra: {}, created: parseYmd(k).getTime() });
+  }
+  await save('rides', 'body');
+  toast('取り込みました');
+  render();
+}
+
+function healthGuideHtml() {
+  return `<p class="small">iPhoneの「ショートカット」アプリで、ヘルスケアの記録をコピーするショートカットを1つ作ります（最初の1回だけ）。</p>
+  <ol class="small guide">
+    <li>「ショートカット」アプリを開き、右上の「＋」を押す</li>
+    <li>上の名前を「<b>bodymake用にコピー</b>」に変える</li>
+    <li>「アクションを検索」で <b>ヘルスケアサンプルを検索</b> を追加し、次のように設定
+      <ul><li>種類：<b>サイクリングの距離</b></li><li>「開始日」が「<b>過去 7 日以内</b>」</li><li>「グループ化」があれば「<b>日</b>」（無ければそのままでOK）</li></ul></li>
+    <li><b>各項目を繰り返す</b> を追加（入力が「ヘルスケアサンプル」になっていればOK）</li>
+    <li>繰り返しの中に <b>日付をフォーマット</b> を追加
+      <ul><li>日付の欄をタップ →「繰り返し項目」を選び、もう一度タップして「<b>開始日</b>」を選ぶ</li><li>日付フォーマット：「カスタム」→ <b>yyyy-MM-dd</b> と入力</li><li>時刻フォーマット：「なし」</li></ul></li>
+    <li>続けて繰り返しの中に <b>テキスト</b> を追加し、次のように入れる
+      <ul><li><b>c,</b> と入力 →「フォーマットされた日付」を挿入 → <b>,</b> と入力 →「繰り返し項目」を挿入してタップし「<b>値</b>」を選ぶ</li><li>例：<code>c,フォーマットされた日付,繰り返し項目(値)</code></li></ul></li>
+    <li>「繰り返しの終了」の<b>下</b>に <b>テキストを結合</b> を追加（入力：繰り返しの結果、区切り：<b>改行</b>）</li>
+    <li>その下に <b>テキスト</b> を追加し、1行目に <b>BODYMAKE</b>、改行して2行目に「結合されたテキスト」を挿入</li>
+    <li>その下に <b>クリップボードにコピー</b> を追加</li>
+    <li>右上の「完了」で保存</li>
+  </ol>
+  <h4>毎回の使い方</h4>
+  <ol class="small">
+    <li>ショートカット「bodymake用にコピー」をタップして実行（初回はヘルスケアへのアクセスを「許可」）</li>
+    <li>bodymake を開いて「⌚ Apple Watchから取り込む」を押す</li>
+  </ol>
+  <p class="muted">ショートカットはホーム画面に置いたり、「オートメーション」で毎晩自動で動かしたりもできます。Apple Watchで記録した日は、ホーム画面のルートボタンを押すと二重になるので押さないでください。</p>`;
+}
+
 // ===================== 自転車のカードとシート =====================
 function rideCardHtml() {
   const today = ridesOn(ymd());
@@ -911,7 +992,10 @@ function rideCardHtml() {
       <ul class="list">${today.map(r => `<li><div class="grow small">${h(r.label || '自転車')} ${r1(r.km)}km・約${r.kcal}kcal</div>
         <button class="icon-btn" data-act="rideDelete" data-id="${r.id}" aria-label="削除">✕</button></li>`).join('')}</ul>` : '<p class="muted">今日の記録はまだありません。</p>'}
     ${routes.length ? `<div class="row wrap" style="margin:8px 0">${routes.map((r, i) => `<button class="btn sm" data-act="rideRoute" data-i="${i}">${h(r.name)} ${r1(r.round ? r.km * 2 : r.km)}km</button>`).join('')}</div>` : ''}
-    <button class="btn block" data-act="rideNew">＋ 距離を入れて記録</button>
+    <div class="grid2">
+      <button class="btn" data-act="rideNew">＋ 距離を入れる</button>
+      <button class="btn" data-act="healthImport">⌚ Apple Watchから</button>
+    </div>
     <p class="muted">${rideWeekText()}</p>
   </div>`;
 }
@@ -1460,6 +1544,21 @@ const ACT = {
 
   // ---- 自転車 ----
   rideNew: () => rideSheet(),
+  async healthImport() {
+    if (!S.settings.healthSetup) { ACT.healthGuide(); return; }
+    let text = '';
+    try { text = await navigator.clipboard.readText(); } catch {}
+    if (!/BODYMAKE/i.test(text)) text = prompt('コピーした内容を貼り付けてください（長押し→ペースト）', '') || '';
+    if (text) importHealth(text);
+  },
+  healthGuide: () => openSheet('Apple Watchの記録を取り込む', healthGuideHtml() + `
+    <button class="btn primary block" data-act="healthReady">ショートカットを作った・取り込む</button>`),
+  async healthReady() {
+    S.settings.healthSetup = true;
+    await save('settings');
+    closeSheet();
+    ACT.healthImport();
+  },
   async rideRoute(el) {
     const r = S.settings.routes[+el.dataset.i];
     const km = r.round ? r.km * 2 : r.km;
