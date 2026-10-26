@@ -270,6 +270,11 @@ details summary { cursor: pointer; color: var(--accent); font-weight: 600; paddi
 .dish { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
 .dish:last-of-type { border-bottom: 0; }
 .usual-btn { margin-top: 8px; white-space: normal; }
+.week-line { margin: 6px 0 0; }
+.pin { border: 1px solid var(--line); background: var(--card); color: var(--sub); border-radius: 99px; font-size: 11px; font-weight: 600; padding: 3px 8px; white-space: nowrap; flex: none; }
+.pin.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { .pin.on { color: #06201d; } }
+.habit { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: var(--bg); border-radius: 10px; padding: 8px 10px; margin-top: 6px; }
 .spinner { width: 44px; height: 44px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

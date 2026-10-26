@@ -68,6 +68,8 @@ const DEFAULT_SETTINGS = {
   target: null, // { weight, fatPct, skeletalMuscle, reason, steps, source, date, startWeight, startFat }
   bike: 'normal',
   shortcutName: 'bodymake用にコピー',
+  weekBalance: true, // 1週間のバランスで毎日の目標カロリーを自動調整する
+  pinned: ['ab4'], // 毎回必ず入れる種目（最初はアブローラー）
   routes: [],
   sessionMode: 'weights', // weights=ウェイトのみ / both=ウェイト＋有酸素 / cardio=有酸素のみ
   weightMin: 60,
@@ -75,7 +77,7 @@ const DEFAULT_SETTINGS = {
 };
 
 // ===================== 保存（iPhoneの中のデータベース） =====================
-const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [], rides: [], today: null };
+const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [], rides: [], today: null, events: [], habits: [] };
 let dbPromise;
 
 function db() {
@@ -422,13 +424,115 @@ const ridesOn = date => S.rides.filter(r => r.date === date);
 const rideKcalOn = date => ridesOn(date).reduce((a, r) => a + r.kcal, 0);
 // 有酸素運動は消費kcalが入っているもの（Apple Watchやマシンの表示）だけ足す
 const cardioKcalOn = date => S.workouts.filter(w => w.date === date).reduce((a, w) => a + (w.cardio || []).reduce((b, c) => b + (num(c.kcal) || 0), 0), 0);
-// その日の目標: 自転車と有酸素運動で使った分を炭水化物として上乗せ
-function targetsOn(date) {
+// その日の目標: 自転車と有酸素運動で使った分を炭水化物として上乗せ（週のバランス調整の前）
+function baseTargetsOn(date) {
   const t = targets();
   if (!t) return null;
   const ride = rideKcalOn(date), cardio = cardioKcalOn(date), extra = ride + cardio;
   return { ...t, kcal: t.kcal + extra, carbs: t.carbs + extra / 4, ride, cardio, extra };
 }
+// ===================== 1週間の食事バランス =====================
+// 会食の予定 1件のおおよその量: お店の1人前×食べる量＋お酒1杯150kcal
+const eventKcalOn = date => (S.events || []).filter(e => e.date === date).reduce((a, e) => a + (num(e.kcal) || 0), 0);
+const weekDays = () => Array.from({ length: 7 }, (_, i) => addDays(weekStartOf(ymd()), i));
+function weekPlan() {
+  const today = ymd(), days = weekDays();
+  // これまで（今日より前で記録がある日）の「食べた量 − 目標」
+  const pastDays = days.filter(d => d < today && mealsOn(d).length);
+  const past = pastDays.reduce((a, d) => a + dayTotals(d).kcal - baseTargetsOn(d).kcal, 0);
+  // これからの会食で、ふだんの夕ごはん（目標の約4割）より多くなる分
+  const future = days.filter(d => d >= today);
+  const evDays = future.filter(d => eventKcalOn(d));
+  const evExcess = evDays.reduce((a, d) => a + Math.max(0, eventKcalOn(d) - baseTargetsOn(d).kcal * 0.4), 0);
+  const normal = future.filter(d => !eventKcalOn(d));
+  const raw = normal.length ? -(past + evExcess) / normal.length : 0;
+  // 1日に減らすのは400kcalまで、増やすのは200kcalまで
+  const per = Math.round(Math.max(-400, Math.min(200, raw)));
+  return { days, pastDays, past, evDays, evExcess, normal, per, capped: Math.abs(raw - per) > 1 };
+}
+function targetsOn(date) {
+  const t = baseTargetsOn(date);
+  if (!t || !S.settings.weekBalance || date < ymd() || !weekDays().includes(date)) return t;
+  const wp = weekPlan(), ev = eventKcalOn(date);
+  let adj = Math.round(ev ? Math.max(0, ev - t.kcal * 0.4) : wp.per);
+  if (!adj) return t;
+  const kcal = Math.max(Math.round(t.bmr), t.kcal + adj);
+  adj = kcal - t.kcal;
+  // 増やす分は炭水化物に、減らす分は炭水化物6：脂質4で減らす（たんぱく質はそのまま）
+  return { ...t, kcal, carbs: Math.max(0, adj > 0 ? t.carbs + adj / 4 : t.carbs + (adj * 0.6) / 4), fat: Math.max(0, adj > 0 ? t.fat : t.fat + (adj * 0.4) / 9), weekAdj: adj, eventDay: !!ev };
+}
+function weekReason(wp) {
+  const r = [];
+  if (wp.evDays.length) r.push(`${wp.evDays.map(d => jpDate(d)).join('・')}の会食に備えて`);
+  if (wp.past > 100) r.push('食べすぎた分を少しずつ調整');
+  if (wp.past < -100 && !wp.evDays.length) r.push('控えめだった分を少し戻して');
+  return r.join('・');
+}
+function weekBalanceHtml(compact) {
+  const base = baseTargetsOn(ymd());
+  if (!base) return '';
+  const wp = weekPlan(), today = targetsOn(ymd());
+  const on = S.settings.weekBalance;
+  const pastText = !wp.pastDays.length ? 'まだ記録なし' : Math.abs(wp.past) < 100 ? 'ちょうどいいペース' : wp.past > 0 ? `<b class="up">+${r0(wp.past)}kcal 食べすぎ</b>` : `<b class="down">${r0(wp.past)}kcal 控えめ</b>`;
+  const adjText = today?.eventDay ? `🍻 今日は会食の日。目標を <b>+${r0(today.weekAdj)}kcal</b> にしています（${r0(today.kcal)}kcal）`
+    : on && today?.weekAdj ? `今日の目標は いつもより <b>${today.weekAdj > 0 ? '+' : ''}${r0(today.weekAdj)}kcal</b>（${r0(today.kcal)}kcal）${weekReason(wp) ? `：${weekReason(wp)}` : ''}` : '';
+  if (compact) return adjText || wp.evDays.length ? `<p class="small week-line">📅 ${adjText || `今週は${wp.evDays.map(d => jpDate(d)).join('・')}に会食の予定`}</p>` : '';
+  const upcoming = (S.events || []).filter(e => e.date >= ymd()).sort((a, b) => a.date.localeCompare(b.date));
+  const last30 = Array.from({ length: 30 }, (_, i) => addDays(ymd(), -(i + 1))).filter(d => mealsOn(d).length);
+  const avg = last30.length ? last30.reduce((a, d) => a + dayTotals(d).kcal, 0) / last30.length : 0;
+  const over = last30.filter(d => dayTotals(d).kcal > baseTargetsOn(d).kcal * 1.1).length;
+  return `<div class="card"><h3>📅 今週の食事バランス <span class="muted">${jpDate(wp.days[0])}〜${jpDate(wp.days[6])}</span></h3>
+    <p class="small">これまで（記録した${wp.pastDays.length}日）：${pastText}</p>
+    ${adjText ? `<div class="hint small">${adjText}</div>` : ''}
+    ${on && wp.capped ? '<p class="muted">無理な食事制限にならないよう、1日に減らすのは400kcalまでにしています。全部を今週で取り戻さなくて大丈夫です。</p>' : ''}
+    <h4>会食・飲み会の予定</h4>
+    ${upcoming.length ? `<ul class="list">${upcoming.map(e => `<li><div class="grow small"><b>${jpDate(e.date)}</b> ${h(e.label)}<div class="muted">約${r0(e.kcal)}kcal</div></div>
+      <button class="icon-btn" data-act="eventDelete" data-id="${e.id}" aria-label="予定を削除">✕</button></li>`).join('')}</ul>` : '<p class="muted">予定はありません。</p>'}
+    <button class="btn sm" data-act="eventNew">＋ 会食・飲み会の予定を入れる</button>
+    <label class="check" style="margin-top:8px"><input type="checkbox" data-set="weekBalance" ${on ? 'checked' : ''}>今週のバランスで、毎日の目標カロリーを自動で調整する</label>
+    ${last30.length >= 3 ? `<h4>直近30日</h4><p class="small">記録した${last30.length}日の平均 <b>${r0(avg)}kcal</b>（目標 ${r0(base.kcal)}kcal）・目標を1割以上こえた日 ${over}日</p>` : ''}
+    <button class="btn block" data-act="foodAnalyzeAI" style="margin-top:8px">🤖 AIに1週間・1か月の食事を分析してもらう</button>
+  </div>`;
+}
+function eventSheet() {
+  draft = { shop: 'izakaya', rough: 1, drinks: 2 };
+  openSheet('会食・飲み会の予定', `
+    <label class="field">日付${dateBox('id="ev-date"', addDays(ymd(), 1))}</label>
+    <label class="field">メモ（任意）<input id="ev-label" placeholder="例：会社の飲み会"></label>
+    <label class="field">お店の種類<select id="ev-shop" data-in="eventCalc">${SHOPS.map(x => `<option value="${x[0]}">${x[1]}</option>`).join('')}</select></label>
+    <div class="grid2">
+      <label class="field">食べる量<select id="ev-amount" data-in="eventCalc">${ROUGH_AMOUNTS.map(([v, l]) => `<option value="${v}" ${v === 1 ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="field">お酒（杯）<select id="ev-drinks" data-in="eventCalc">${[0, 1, 2, 3, 4, 5, 6, 8].map(n => `<option value="${n}" ${n === 2 ? 'selected' : ''}>${n}杯</option>`).join('')}</select></label>
+    </div>
+    <div class="hint small" id="ev-kcal"></div>
+    <button class="btn primary block" data-act="eventSave">予定を入れる</button>`);
+  INPUT.eventCalc();
+}
+const eventKcalCalc = () => {
+  const shop = SHOPS.find(x => x[0] === $('#ev-shop').value);
+  return Math.round(shop[2] * num($('#ev-amount').value) + num($('#ev-drinks').value) * 150);
+};
+function foodAnalyzePrompt() {
+  const days = Array.from({ length: 30 }, (_, i) => addDays(ymd(), -i)).reverse().filter(d => mealsOn(d).length);
+  const lines = days.map(d => { const t = dayTotals(d), g = baseTargetsOn(d); return `${d}（${'日月火水木金土'[parseYmd(d).getDay()]}） ${r0(t.kcal)}kcal P${r0(t.protein)} F${r0(t.fat)} C${r0(t.carbs)} / 目標${r0(g.kcal)}kcal P${r0(g.protein)}`; });
+  const ws = sortedBody().filter(b => num(b.weight) != null && b.date >= addDays(ymd(), -30)).map(b => `${b.date} ${b.weight}kg${b.fatPct ? ' ' + b.fatPct + '%' : ''}`);
+  const evs = (S.events || []).filter(e => e.date >= ymd()).map(e => `${e.date} ${e.label}（約${e.kcal}kcal）`);
+  return `あなたは日本の管理栄養士です。利用者の直近30日の食事記録を分析し、1週間・1か月のトータルのバランスで、続けやすい調整方法を提案してください。
+【なりたい体・目標】
+${goalsText()}
+【毎日の食事（記録した日のみ）】
+${lines.join('\n') || 'なし'}
+【体重の変化】
+${ws.join('\n') || 'なし'}
+【これからの会食の予定】
+${evs.join('\n') || 'なし'}
+- 曜日ごとの傾向（週末に多い など）、たんぱく質・脂質の傾向、記録が抜けがちな日も見てください
+- 食べすぎた日を責めず、1週間の合計で整える考え方で。極端な制限はすすめないでください
+- 会食の予定がある場合は、その前後の日の過ごし方も具体的に
+次の形のJSONだけを返してください:
+{"summary":"全体のまとめ（2〜3文）","patterns":["見つかった傾向"],"advice":["具体的なアドバイス"],"nextWeek":"これからの1週間の過ごし方（会食があればその前後も）"}`;
+}
+
 function rideWeekText() {
   const from = addDays(ymd(), -6);
   const rs = S.rides.filter(r => r.date >= from);
@@ -647,6 +751,67 @@ const CATALOG = [
   { id: 'l5', part: 'legs', group: 'legs', eq: 'machine', name: 'レッグエクステンション（マシン）', sets: 3, reps: '12-15', rest: '60秒',
     where: '太ももの前', effect: '膝の上の筋肉が発達し、脚にメリハリが出る', note: '上で1秒止める' },
 ];
+// 宅トレ（自重トレーニング）の種目
+const HOME_CATALOG = [
+  { id: 'h3', part: 'chest', group: 'push', name: 'デクラインプッシュアップ（足を椅子に乗せる）', sets: 3, reps: '8-15', rest: '60秒', goal: 'chest', alt: '膝つき腕立て伏せ',
+    where: '大胸筋の上部・肩の前・腕の裏', effect: '足を高くすると胸の上部に効き、ジムのインクライン種目の代わりになる。胸の丸みづくりに', note: '体を一直線にして、胸を床に近づける' },
+  { id: 'h1', part: 'chest', group: 'push', name: '腕立て伏せ', sets: 3, reps: '10-15', rest: '60秒', alt: '膝つき腕立て伏せ',
+    where: '大胸筋全体・肩の前・腕の裏', effect: '胸全体を鍛える基本の種目。ベンチプレスの代わりになる', note: '手は肩幅より少し広く。3秒かけて下ろす' },
+  { id: 'h4', part: 'chest', group: 'push', name: 'ワイドプッシュアップ', sets: 3, reps: '10-15', rest: '60秒', alt: '膝つき腕立て伏せ',
+    where: '大胸筋の外側・全体', effect: '手幅を広くして胸を大きく伸ばし、胸の横幅を広げる', note: '手は肩幅の1.5倍くらい' },
+  { id: 'h2', part: 'chest', group: 'push', name: '膝つき腕立て伏せ', sets: 3, reps: '10-15', rest: '60秒',
+    where: '大胸筋全体', effect: '普通の腕立てがきついときの軽いやり方。フォームを覚えるのにも向く', note: '膝から頭まで一直線に' },
+  { id: 'h7', part: 'shoulder', group: 'push', name: 'パイクプッシュアップ', sets: 3, reps: '8-12', rest: '60秒',
+    where: '肩（三角筋）・腕の裏', effect: 'お尻を高く上げた腕立てで、肩を丸く大きくする。ショルダープレスの代わり', note: '頭を両手の間に下ろす' },
+  { id: 'h5', part: 'arm', group: 'push', name: 'ダイヤモンドプッシュアップ', sets: 3, reps: '8-12', rest: '60秒', alt: '椅子ディップス',
+    where: '腕の裏（上腕三頭筋）・胸の内側', effect: '手を近づけた腕立てで、二の腕を引き締めて太くする', note: '両手でひし形を作る。ひじは体の横に' },
+  { id: 'h6', part: 'arm', group: 'push', name: '椅子ディップス', sets: 3, reps: '10-15', rest: '60秒',
+    where: '腕の裏（上腕三頭筋）', effect: '椅子を使って二の腕を鍛える。腕全体が太く見える', note: '動かない椅子で。お尻を椅子のすぐ前に' },
+  { id: 'h8', part: 'back', group: 'pull', name: 'スーパーマン', sets: 3, reps: '12-15', rest: '45秒',
+    where: '背中・腰（脊柱起立筋）・お尻', effect: '背中を鍛えて姿勢がよくなり、胸が張って見える', note: 'うつ伏せで手足を同時に上げ、2秒止める' },
+  { id: 'h9', part: 'back', group: 'pull', name: 'リバーススノーエンジェル', sets: 3, reps: '12-15', rest: '45秒',
+    where: '背中の上部・肩の後ろ', effect: '肩甲骨まわりを鍛え、猫背・巻き肩を防ぐ。ジムのフェイスプルの代わり', note: 'うつ伏せで腕を浮かせたまま、頭の上から腰まで大きく動かす' },
+  { id: 'h16', part: 'legs', group: 'legs', name: 'スクワット（自重）', sets: 3, reps: '15-20', rest: '60秒',
+    where: '太もも・お尻', effect: '大きい筋肉を使うので代謝が上がる', note: 'お尻を後ろに引いて、膝とつま先の向きをそろえる' },
+  { id: 'h17', part: 'legs', group: 'legs', name: 'ブルガリアンスクワット', sets: 3, reps: '10-12', rest: '60秒',
+    where: '太もも・お尻', effect: '片脚ずつで自重でも強い負荷がかかる', note: '後ろ足を椅子に乗せる。左右それぞれ' },
+  { id: 'h18', part: 'legs', group: 'legs', name: 'ヒップリフト', sets: 3, reps: '15', rest: '45秒',
+    where: 'お尻・太ももの裏', effect: 'お尻を引き締め、後ろ姿が整う', note: 'あお向けで膝を立て、お尻を上げて2秒止める' },
+  { id: 'h11', part: 'abs', group: 'abs', name: 'クランチ', sets: 3, reps: '15-20', rest: '45秒', goal: 'abs',
+    where: '腹筋の上部', effect: '腹筋の上の段をはっきりさせる', note: 'おへそをのぞき込むように。反動を使わない' },
+  { id: 'h12', part: 'abs', group: 'abs', name: 'レッグレイズ（床）', sets: 3, reps: '10-15', rest: '45秒', goal: 'abs',
+    where: '腹筋の下部', effect: '下腹を引き締め、6パックの下の段を出す', note: '腰が浮かないように、ゆっくり下ろす' },
+  { id: 'h13', part: 'abs', group: 'abs', name: 'プランク', sets: 3, reps: '45秒', rest: '30秒',
+    where: '体幹', effect: 'お腹を内側から締め、姿勢を安定させる', note: '頭からかかとまで一直線' },
+  { id: 'h14', part: 'abs', group: 'abs', name: 'バイシクルクランチ', sets: 3, reps: '左右15回', rest: '45秒', goal: 'abs',
+    where: '腹筋全体・脇腹', effect: '腹筋と脇腹を同時に鍛え、くびれのラインも出る', note: 'ひじと反対の膝を近づける' },
+  { id: 'h15', part: 'abs', group: 'abs', name: 'マウンテンクライマー', sets: 3, reps: '30秒', rest: '30秒',
+    where: '腹筋・全身', effect: '息が上がるので脂肪燃焼にもなる', note: '腕立ての姿勢で膝を胸に引きつける' },
+];
+const HOME_PICKS = { chest: ['h3', 'h1', 'h4'], back: ['h8', 'h9'], legs: ['h16', 'h17', 'h18'], shoulder: ['h7'], arm: ['h5', 'h6'] };
+const HOME_ABS = ['h11', 'h12', 'h14', 'h13', 'h15'];
+const homeEx = id => HOME_CATALOG.find(c => c.id === id);
+// ジムのメニューと同じ部位を、自重で鍛えるメニューにする（家では待ち時間がないので1種目約7分）
+function homeDay(day, t) {
+  const parts = dayParts(day);
+  if (!parts.length) return day;
+  const absN = t.minutes >= 60 ? 2 : 1;
+  const mainN = Math.max(2, Math.floor((t.minutes - 5 - 4 * absN) / 7));
+  const order = Object.keys(PART_ORDER).filter(p => parts.includes(p) && HOME_PICKS[p]);
+  const main = [];
+  for (let k = 0; main.length < mainN && k < 3; k++) for (const p of order) { const id = HOME_PICKS[p][k]; if (id && main.length < mainN) main.push(homeEx(id)); }
+  // 時間に余裕があれば、ほかの上半身の自重種目で埋める（脚は選んでいるときだけ）
+  const legsOk = chosenList().some(c => c.part === 'legs');
+  for (const id of ['h7', 'h5', 'h9', 'h8', 'h6', ...(legsOk ? ['h16', 'h18'] : [])]) { if (main.length >= mainN) break; if (!main.some(c => c.id === id)) main.push(homeEx(id)); }
+  const start = (currentPlan().days.findIndex(d => d.name === day.name) * 2) % HOME_ABS.length;
+  const pins = pinnedList().filter(c => c.eq === 'body' && c.group === 'abs');
+  const abs = [...pins, ...Array.from({ length: Math.max(0, absN - pins.length) }, (_, i) => homeEx(HOME_ABS[(start + i) % HOME_ABS.length]))];
+  const condNote = { tired: '疲れている日は2セットでOK', form: '回数より「ゆっくり・正しいフォーム」を優先', push: '最後のセットは限界まで' }[t.cond] || '';
+  const names = [...main, ...abs].map(c => c.name);
+  const exercises = [...main, ...abs].map((c, i) => ({ name: c.name, sets: t.cond === 'tired' ? 2 : t.cond === 'push' && i < 2 ? 4 : c.sets, reps: c.reps, rest: c.rest, weight: '自重', alt: c.alt && !names.includes(c.alt) ? c.alt : '', note: c.note, adj: true, todayNote: c.group !== 'abs' && condNote ? condNote : '' }));
+  return { ...day, home: true, focus: `🏠 自宅でできる自重トレーニング（${partsLabel(main)}）。ジムの${menuLabel(day)}の代わり`, cardio: null, exercises,
+    estMin: 5 + main.length * 7 + abs.length * 4, todayLabel: '宅トレ' };
+}
 const DEFAULT_CHOSEN = ['c9', 'c1', 'c2', 'c4', 'c6', 'b1', 'b2', 's2', 's5', 'a1', 'a3', 'ab1', 'ab2', 'ab4'];
 // 並び順: 1=重さを扱う多関節種目（フリーウェイト・スミス・自重）→ 2=マシンの多関節種目 → 3=仕上げの単関節種目 → 4=腹
 const TIER = { c9: 1, c3: 1, c1: 1, c2: 1, c8: 1, b4: 1, b3: 1, l1: 1, l3: 1, c4: 2, b1: 2, b2: 2, s1: 2, l2: 2 };
@@ -654,7 +819,7 @@ const tierOf = c => (c.group === 'abs' ? 4 : TIER[c.id] || 3);
 const PART_ORDER = { chest: 0, back: 1, legs: 2, shoulder: 3, arm: 4, abs: 5 };
 const byTier = list => [...list].sort((a, b) => tierOf(a) - tierOf(b) || PART_ORDER[a.part] - PART_ORDER[b.part] || CATALOG.indexOf(a) - CATALOG.indexOf(b));
 const normName = n => String(n || '').replace(/[（(][^）)]*[）)]/g, '').replace(/\s/g, '');
-const catalogFor = name => CATALOG.find(c => c.name === name) || CATALOG.find(c => normName(c.name) === normName(name));
+const catalogFor = name => CATALOG.find(c => c.name === name) || HOME_CATALOG.find(c => c.name === name) || CATALOG.find(c => normName(c.name) === normName(name)) || HOME_CATALOG.find(c => normName(c.name) === normName(name));
 const eqOk = c => c.eq === 'body' || S.settings.equipment.includes(c.eq) || (c.id === 'b2' && S.settings.equipment.includes('cable')) || (c.id === 's1' && S.settings.equipment.includes('free'));
 const chosenList = () => CATALOG.filter(c => (S.settings.chosen || DEFAULT_CHOSEN).includes(c.id) && eqOk(c));
 
@@ -677,7 +842,10 @@ function defaultPlan(n) {
     : { type: 'エアロバイク', min: cMin, note: '会話ができるくらいの強さで。筋トレの後にやると脂肪が燃えやすい' };
   // 腹の種目は日ごとに入れ替える
   const day = (items, focus, i) => {
-    const absPart = L ? [...new Set(Array.from({ length: absN }, (_, k) => abs[(i * absN + k) % L]))] : [];
+    // 📌の腹筋種目は毎回入れ、残りの枠を日ごとに入れ替える
+    const pinAbs = abs.filter(c => pinnedIds().has(c.id)), others = abs.filter(c => !pinnedIds().has(c.id));
+    const need = Math.max(0, absN - pinAbs.length), O = others.length;
+    const absPart = [...pinAbs, ...(O ? [...new Set(Array.from({ length: need }, (_, k) => others[(i * need + k) % O]))] : [])];
     const list = byTier([...new Set(items)].slice(0, maxEx - absPart.length)).concat(absPart);
     const est = WARMUP_MIN + list.reduce((a, c) => a + (c.group === 'abs' ? ABS_MIN : EX_MIN), 0);
     return items.length ? { name: partsLabel(list), focus, estMin: est + (cardioPlan ? cMin : 0), cardio: cardioPlan, exercises: list.map(c => ex(c.name, c.sets, c.reps, c.rest, c.note)) } : null;
@@ -713,7 +881,17 @@ function defaultPlan(n) {
     ].filter(Boolean),
   };
 }
-const currentPlan = () => S.plan || defaultPlan(S.settings.daysPerWeek);
+// 毎回必ず入れる種目（📌）
+const pinnedIds = () => new Set(S.settings.pinned || []);
+const pinnedList = () => CATALOG.filter(c => pinnedIds().has(c.id));
+const isPinned = name => pinnedList().some(c => normName(c.name) === normName(name));
+// メニューの各日に、📌の種目が入っていなければ最後に足す（有酸素だけの日は除く）
+function withPinned(plan, home) {
+  const pins = pinnedList().filter(c => !home || c.eq === 'body');
+  if (!pins.length) return plan;
+  return { ...plan, days: plan.days.map(d => (!d.exercises.length ? d : { ...d, exercises: [...d.exercises, ...pins.filter(c => !d.exercises.some(e => normName(e.name) === normName(c.name))).map(c => ex(c.name, c.sets, c.reps, c.rest, c.note))] })) };
+}
+const currentPlan = () => withPinned(S.plan || defaultPlan(S.settings.daysPerWeek));
 const sortedWorkouts = () => [...S.workouts].sort((a, b) => a.date.localeCompare(b.date) || (a.created || 0) - (b.created || 0));
 
 function nextPlanDay() {
@@ -776,9 +954,9 @@ const TODAY_MINUTES = [30, 45, 60, 75, 90];
 // 今日の入力（日付が変わったら元に戻る）
 function todayInput() {
   const t = S.today && S.today.date === ymd() ? S.today : null;
-  return { minutes: t?.minutes ?? (num(S.settings.weightMin) || 60), cond: t?.cond || 'normal', memo: t?.memo || '', aiDay: t?.aiDay || null };
+  return { minutes: t?.minutes ?? (num(S.settings.weightMin) || 60), cond: t?.cond || 'normal', memo: t?.memo || '', aiDay: t?.aiDay || null, place: t?.place || 'gym' };
 }
-const isDefaultToday = t => t.minutes === (num(S.settings.weightMin) || 60) && t.cond === 'normal' && !t.aiDay;
+const isDefaultToday = t => t.minutes === (num(S.settings.weightMin) || 60) && t.cond === 'normal' && !t.aiDay && t.place !== 'home';
 const round25 = v => Math.max(0, Math.round(v / 2.5) * 2.5);
 const isAbsEx = e => catalogFor(e.name)?.group === 'abs';
 // 基本の重さ: メニューの目安 → 無ければ前回の一番重いセット
@@ -790,6 +968,7 @@ function baseWeight(e) {
 }
 function adjustDay(day) {
   const t = todayInput();
+  if (t.place === 'home') return homeDay(day, t);
   if (t.aiDay && t.aiDay.name === day.name) return t.aiDay;
   if (isDefaultToday(t) || !day.exercises.length) return day;
   const absN = t.minutes >= 75 ? 2 : 1;
@@ -801,7 +980,7 @@ function adjustDay(day) {
   // 時間が短ければ重い種目から残し、長ければ同じ部位の種目を足す
   if (main.length > mainN) main = main.slice(0, mainN);
   else for (const c of extra('main')) { if (main.length >= mainN) break; main.push(ex(c.name, c.sets, c.reps, c.rest, c.note)); }
-  if (abs.length > absN) abs = abs.slice(0, absN);
+  if (abs.length > absN) abs = [...abs.filter(e => isPinned(e.name)), ...abs.filter(e => !isPinned(e.name))].slice(0, Math.max(absN, abs.filter(e => isPinned(e.name)).length));
   else for (const c of extra('abs')) { if (abs.length >= absN) break; abs.push(ex(c.name, c.sets, c.reps, c.rest, c.note)); }
   const [, condLabel, factor, condNote] = CONDITIONS.find(c => c[0] === t.cond);
   const exercises = [...main, ...abs].map((e, i) => {
@@ -824,6 +1003,9 @@ function adjustDay(day) {
 function todayAdjustHtml() {
   const t = todayInput();
   return `<div class="today-adj">
+    <div class="spread" style="margin-top:8px"><span class="small">📍 今日の場所</span>
+      <div class="seg">${[['gym', '🏋️ ジム'], ['home', '🏠 宅トレ']].map(([v, l]) => `<button class="${t.place === v ? 'on' : ''}" data-act="todayPlace" data-v="${v}">${l}</button>`).join('')}</div></div>
+    ${t.place === 'home' ? '<p class="muted" style="margin:4px 0 0">雨の日や忙しい日は、家で同じ部位を自重で鍛えましょう。</p>' : ''}
     <div class="grid2">
       <label class="field">⏱ 今日の時間<select data-in="todayAdj" data-k="minutes">${TODAY_MINUTES.map(m => `<option value="${m}" ${m === t.minutes ? 'selected' : ''}>${m}分${m === (num(S.settings.weightMin) || 60) ? '（いつも）' : ''}</option>`).join('')}</select></label>
       <label class="field">😊 今日の調子<select data-in="todayAdj" data-k="cond">${CONDITIONS.map(([v, l]) => `<option value="${v}" ${v === t.cond ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -832,7 +1014,7 @@ function todayAdjustHtml() {
       <textarea id="today-memo" placeholder="例：肩が少し痛い／寝不足／脚が筋肉痛">${h(t.memo)}</textarea>
       <button class="btn sm" data-act="todayAI" style="margin-top:6px">🤖 AIに相談して今日のメニューを調整</button>
     </details>
-    ${!isDefaultToday(t) ? `<p class="small hint">今日だけ「${t.aiDay ? 'AIが調整' : `${t.minutes}分・${CONDITIONS.find(c => c[0] === t.cond)[1]}`}」のメニューにしています。${t.aiDay?.advice ? `<br>💬 ${h(t.aiDay.advice)}` : ''}
+    ${!isDefaultToday(t) ? `<p class="small hint">今日だけ「${t.place === 'home' ? `🏠 宅トレ・${t.minutes}分` : t.aiDay ? 'AIが調整' : `${t.minutes}分・${CONDITIONS.find(c => c[0] === t.cond)[1]}`}」のメニューにしています。${t.aiDay?.advice ? `<br>💬 ${h(t.aiDay.advice)}` : ''}
       <button class="btn sm" data-act="todayReset" style="margin-top:4px">いつものメニューに戻す</button></p>` : ''}
   </div>`;
 }
@@ -859,7 +1041,7 @@ function dayCardHtml(d, opts = {}) {
       <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b>${e.usual ? `<span class="muted">（いつもは${h(e.usual)}）</span>` : ''} ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
       ${e.todayNote ? `<div class="small today-note">🎯 今日は：${h(e.todayNote)}</div>` : ''}
       ${opts.compact ? '' : `${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}${effectHtml(e.name)}${e.note ? `<div class="muted">💡 ${h(e.note)}</div>` : ''}`}
-      ${(alt => (alt ? `<div class="small alt">🔁 混んでいたら：${howtoLink(alt)}</div>` : ''))(altOf(e, d.exercises.map(x => x.name)))}</div>`).join('')}
+      ${(alt => (alt ? `<div class="small alt">🔁 ${d.home ? 'きつければ' : '混んでいたら'}：${howtoLink(alt)}</div>` : ''))(altOf(e, d.exercises.map(x => x.name)))}</div>`).join('')}
     ${d.cardio ? `<div class="ex"><div class="ex-name">🏃 有酸素：${h(d.cardio.type)} ${r0(d.cardio.min)}分</div>${d.cardio.note && !opts.compact ? `<div class="muted">💡 ${h(d.cardio.note)}</div>` : ''}</div>` : ''}
     ${opts.button === false ? '' : `<button class="btn ${opts.primary ? 'primary' : 'sm'} block" data-act="startDay" data-i="${i}" ${opts.today ? 'data-today="1"' : ''} style="margin-top:8px">${opts.buttonText || `${menuLabel(d)}で記録する`}</button>`}`;
 }
@@ -926,6 +1108,46 @@ function latestAnalysisText() {
 
 // ===================== 続けるためのコメント =====================
 // 心理の考え方: 小さな達成を認める / 前回の自分と比べる / 「全部かゼロか」にしない / 次の予定を具体的に決める
+// ===================== 毎日の習慣（📌の種目を、ジムに行かない日も記録） =====================
+function habitDays(name) {
+  const set = new Set((S.habits || []).filter(x => normName(x.name) === normName(name)).map(x => x.date));
+  for (const w of S.workouts) if (w.exercises?.some(e => normName(e.name) === normName(name) && e.sets.length)) set.add(w.date);
+  return set;
+}
+function habitStreak(name) {
+  const set = habitDays(name);
+  let n = 0, d = set.has(ymd()) ? ymd() : addDays(ymd(), -1);
+  while (n < 365 && set.has(d)) { n++; d = addDays(d, -1); }
+  return n;
+}
+function habitHtml() {
+  return pinnedList().map(c => {
+    const today = (S.habits || []).find(x => x.date === ymd() && normName(x.name) === normName(c.name));
+    const inWorkout = S.workouts.some(w => w.date === ymd() && w.exercises?.some(e => normName(e.name) === normName(c.name) && e.sets.length));
+    const streak = habitStreak(c.name);
+    return `<div class="habit"><div class="small">🔁 <b>${h(c.name.replace(/（.*?）/, ''))}</b>
+      ${today || inWorkout ? `<span class="tag">✅ 今日やった${today ? `（${today.sets.length}セット）` : ''}</span>` : ''}
+      ${streak >= 2 ? `<span class="muted">${streak}日連続</span>` : ''}</div>
+      <button class="btn sm" data-act="habitNew" data-id="${c.id}">${today ? '直す' : '＋ 記録'}</button></div>`;
+  }).join('');
+}
+function habitSheet(c) {
+  const today = (S.habits || []).find(x => x.date === ymd() && normName(x.name) === normName(c.name));
+  const last = [...(S.habits || [])].filter(x => normName(x.name) === normName(c.name)).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+  draft = { id: today?.id || uid(), name: c.name, sets: structuredClone(today?.sets || (last ? last.sets.map(() => ({ r: null })) : [{ r: null }, { r: null }, { r: null }])), last };
+  openSheet(`${c.name.replace(/（.*?）/, '')}を記録`, `
+    <p class="small">ジムに行かない日も、家でやった分をここに記録できます。${last ? `<br><span class="muted">前回 ${jpDate(last.date)}：${last.sets.map(x => x.r + '回').join(', ')}</span>` : ''}</p>
+    <div id="habit-sets"></div>
+    <button class="btn sm" data-act="habitAddSet">＋ セット</button>
+    <button class="btn primary block" data-act="habitSave" style="margin-top:12px">記録する</button>`);
+  renderHabitSets();
+}
+function renderHabitSets() {
+  $('#habit-sets').innerHTML = `<table class="sets"><tr><th>セット</th><th>回数</th><th></th></tr>${draft.sets.map((x, i) => `<tr><td>${i + 1}</td>
+    <td><input type="number" inputmode="numeric" data-in="habitSet" data-i="${i}" value="${x.r ?? ''}" placeholder="${draft.last?.sets[i]?.r ?? 10}"></td>
+    <td><button class="icon-btn" data-act="habitDelSet" data-i="${i}" aria-label="セットを削除">−</button></td></tr>`).join('')}</table>`;
+}
+
 function weekStartOf(s) { const d = parseYmd(s); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return ymd(d); }
 const weekCount = ws => new Set(strengthWorkouts().filter(w => weekStartOf(w.date) === ws).map(w => w.date)).size;
 const weekTarget = () => num(S.settings.daysPerWeek) || 3;
@@ -962,6 +1184,10 @@ function coachMessages() {
       if (target - done <= left) add(4, '📅', `今週はあと${target - done}回。次は${jpDate(ts.nextAt.date)}がおすすめ。行く日と時間を先に決めておくと、迷わず続けられます。`);
     }
     if (streak >= 2 && done < target) add(5, '🔥', `${streak}週連続で目標達成中。今週もつなげましょう。`);
+  }
+  for (const c of pinnedList()) {
+    const hs = habitStreak(c.name);
+    if (hs >= 3) add(5, '🔁', `${c.name.replace(/（.*?）/, '')}が${hs}日連続。毎日の小さな習慣が、いちばん体を変えます。`);
   }
   const ms = mealStreak();
   if (ms >= 2) add(5, '🍚', `食事の記録が${ms}日連続。${pick('ms', ['記録するだけで、食べ方は自然と整っていきます。', '続けていること自体が、もう成果です。', '自分の食事が見えるようになると、迷いが減ります。'])}`);
@@ -1005,6 +1231,7 @@ function workoutPraise(w) {
   if (day && day.exercises.length && w.exercises.length >= adjustDay(day).exercises.length) lines.push('✅ メニューを最後までやり切りました。');
   const t = todayInput();
   if (t.minutes < (num(S.settings.weightMin) || 60)) lines.push('⏱ 時間が少ない日でもジムに来たことが一番えらい。「ゼロの日」を作らないことが習慣を作ります。');
+  if (w.place === 'home') lines.push('🏠 ジムに行けない日でも、家でやり切りました。「できる形で続ける」ことが、いちばん強い習慣になります。');
   if (t.cond === 'tired' || t.cond === 'form') lines.push('🧘 体調に合わせて軽めにできたのも立派な判断。それが長く続けるためのいちばん賢いやり方です。');
   const done = weekCount(weekStartOf(w.date)), target = weekTarget();
   lines.push(done >= target ? `🎉 今週${done}回目で、週${target}回の目標を達成！` : `📊 今週${done}回目（目標は週${target}回）。`);
@@ -1055,6 +1282,7 @@ const VIEWS = {
       ${t ? bar('カロリー', tot.kcal, t.kcal, 'kcal') + bar('たんぱく質', tot.protein, t.protein, 'g')
         : '<p class="muted">体重を一度記録すると、1日の目標カロリーが出ます。</p>'}
       ${t ? `<p class="muted">あと ${r0(Math.max(0, t.kcal - tot.kcal))} kcal・たんぱく質 ${r0(Math.max(0, t.protein - tot.protein))} g${t.extra ? `（${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} を目標に足しています）` : ''}</p>` : ''}
+      ${weekBalanceHtml(true)}
       ${usualBreakfastBtn()}
       ${nextMealHtml(true)}
       <div class="grid3 sec-btns">
@@ -1085,6 +1313,7 @@ const VIEWS = {
       : `<p class="small">${ts.state === 'done' ? '✅ 今日はトレーニング済み。' : '🛌 今日は休養日。'}体を休ませて超回復を待ちましょう。</p>`}
       <p class="small">📅 次回：<b>${jpDate(ts.nextAt.date)}</b> に ${menuLabel(ts.next)} ${h(dayTitle(ts.next))}</p>
       <p class="muted">今週 ${weekCount(weekStartOf(ymd()))}/${weekTarget()}回${lastW ? ` ・ 前回 ${jpDate(lastW.date)}` : ''}</p>
+      ${habitHtml()}
       <div class="grid2 sec-btns">
         <button class="btn ${ts.state === 'go' ? 'primary' : ''}" data-act="startWorkout">🏋️ 記録する</button>
         <button class="btn" data-act="go" data-tab="train">メニューを見る</button>
@@ -1117,6 +1346,7 @@ const VIEWS = {
       ${t?.extra ? `<p class="muted">🚲🏃 この日の${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} 分を目標に足しています</p>` : ''}
       ${mealDate === ymd() ? usualBreakfastBtn() + nextMealHtml(false) : ''}
     </div>`;
+    if (mealDate === ymd()) html += weekBalanceHtml(false);
     html += `<div class="btn-grid">
       <button class="btn primary" data-act="mealPhoto">📷 写真で記録</button>
       <button class="btn" data-act="mealText">✏️ 文字で記録</button>
@@ -1221,7 +1451,7 @@ const VIEWS = {
     </div>`;
     html += `<div class="card"><h3>トレーニングの記録</h3>${ws.length ? `<ul class="list">${ws.map(w => `
       <li class="tap" data-act="workoutEdit" data-id="${w.id}"><div class="grow">
-        <div class="title">${jpDate(w.date)} ${h(w.dayName)}</div>
+        <div class="title">${jpDate(w.date)} ${w.place === 'home' ? '🏠 ' : ''}${h(w.dayName)}${w.place === 'home' ? '（宅トレ）' : ''}</div>
         <div class="muted">${[w.exercises.length ? `${w.exercises.length}種目 ・ ${w.exercises.reduce((a, e) => a + e.sets.length, 0)}セット` : '', w.cardio?.length ? `有酸素 ${w.cardio.reduce((a, c) => a + (num(c.min) || 0), 0)}分` : ''].filter(Boolean).join(' ・ ')}</div>
       </div></li>`).join('')}</ul>` : '<p class="muted">まだ記録がありません。</p>'}</div>`;
     return html;
@@ -1635,14 +1865,16 @@ function effectHtml(name) {
 }
 function pickSheet() {
   const chosen = new Set(S.settings.chosen || DEFAULT_CHOSEN);
+  draft = { pins: pinnedIds() };
   openSheet('やりたい種目を選ぶ', `
-    <p class="small">やりたい種目にチェックを入れてください。種目名をタップすると、使い方の動画（YouTube）が開きます。<span class="tag">胸の丸み</span><span class="tag">腹筋</span>は今の目標に特に効く種目、<span class="tag">見た目の変化大</span>は体の見た目が変わりやすい種目です。</p>
+    <p class="small">やりたい種目にチェックを入れてください。「📌 毎回」を付けた種目は、ジムでも宅トレでも毎回のメニューに必ず入ります。種目名をタップすると、使い方の動画（YouTube）が開きます。<span class="tag">胸の丸み</span><span class="tag">腹筋</span>は今の目標に特に効く種目、<span class="tag">見た目の変化大</span>は体の見た目が変わりやすい種目です。</p>
     ${PARTS.map(([k, l]) => {
       const items = CATALOG.filter(c => c.part === k);
       return `<div class="pick-part"><div class="spread"><h4 style="margin:0">${l}</h4>
         <span><button class="btn sm" data-act="pickPart" data-part="${k}" data-on="1">全部選ぶ</button> <button class="btn sm" data-act="pickPart" data-part="${k}" data-on="0">全部外す</button></span></div>
         ${items.map(c => `<label class="pick ${eqOk(c) ? '' : 'disabled'}"><input type="checkbox" data-pick="${c.id}" data-part="${k}" ${chosen.has(c.id) ? 'checked' : ''} ${eqOk(c) ? '' : 'disabled'}>
-          <div class="grow"><div class="pick-name">${howtoLink(c.name)} ${c.goal ? `<span class="tag">${GOAL_TAGS[c.goal]}</span>` : ''}${beginnerTag(c)}${eqOk(c) ? '' : ' <span class="muted">（器具がないため選べません）</span>'}</div>
+          <div class="grow"><div class="spread"><div class="pick-name">${howtoLink(c.name)} ${c.goal ? `<span class="tag">${GOAL_TAGS[c.goal]}</span>` : ''}${beginnerTag(c)}${eqOk(c) ? '' : ' <span class="muted">（器具がないため選べません）</span>'}</div>
+            ${eqOk(c) ? `<button class="pin ${draft.pins.has(c.id) ? 'on' : ''}" data-act="pinToggle" data-id="${c.id}">📌 毎回</button>` : ''}</div>
           <div class="small">🎯 ${h(c.where)}</div><div class="muted">✨ ${h(c.effect)}</div></div></label>`).join('')}
       </div>`;
     }).join('')}
@@ -1893,6 +2125,7 @@ ${goalsText()}
 【やりたい種目（この中からだけ選ぶ）】
 ${chosenList().map(c => `- ${c.name}（${c.where}）`).join('\n')}
 【やらない部位】${PARTS.filter(([k]) => !chosenList().some(c => c.part === k)).map(([, l]) => l).join('、') || 'なし'}
+【毎回必ず入れる種目】${pinnedList().map(c => c.name).join('、') || 'なし'}
 【ふだんの自転車移動】${rideWeekText()}
 【体の写真の分析】
 ${latestAnalysisText()}
@@ -1954,13 +2187,13 @@ function renderCardio() {
 const weightLbNote = (w, u = S.settings.unit) => (u === 'lb' && /kg/i.test(w) && firstNum(w) ? `（約${toUnit(firstNum(w), 'lb')}lb）` : '');
 function workoutFromPlanDay(day, date = ymd()) {
   return {
-    id: uid(), date, dayName: day.name, unit: S.settings.unit,
+    id: uid(), date, dayName: day.name, unit: S.settings.unit, ...(day.home ? { place: 'home' } : {}),
     cardio: day.cardio ? [{ type: day.cardio.type, min: day.cardio.min }] : [],
     exercises: day.exercises.map(e => {
       const last = lastPerf(e.name);
       const n = num(e.sets) || 3;
       // 今日の調整で重さを変えたときは、その重さを入れる
-      const sets = Array.from({ length: n }, (_, i) => ({ w: e.adj && firstNum(e.weight) ? firstNum(e.weight) : last ? (last.sets[i] || last.sets.at(-1)).w : firstNum(e.weight), r: null }));
+      const sets = Array.from({ length: n }, (_, i) => ({ w: day.home ? 0 : e.adj && firstNum(e.weight) ? firstNum(e.weight) : last ? (last.sets[i] || last.sets.at(-1)).w : firstNum(e.weight), r: null }));
       return { name: e.name, reps: e.reps, weight: e.weight || '', target: `${n}×${e.reps}`, alt: altOf(e, day.exercises.map(x => x.name)) || '', sets };
     }),
   };
@@ -1972,7 +2205,7 @@ function renderWorkoutList() {
     const hint = overloadHint(e, last, u);
     return `<div class="ex">
       <div class="spread"><div class="ex-name">${howtoLink(e.name)}</div><button class="icon-btn" data-act="workoutDelEx" data-e="${ei}" aria-label="種目を削除">✕</button></div>
-      ${e.alt ? `<button class="btn sm alt-btn" data-act="workoutSwap" data-e="${ei}">🔁 混んでいたら「${h(e.alt)}」に変える</button>` : ''}
+      ${e.alt ? `<button class="btn sm alt-btn" data-act="workoutSwap" data-e="${ei}">🔁 ${draft.place === 'home' ? 'きつければ' : '混んでいたら'}「${h(e.alt)}」に変える</button>` : ''}
       <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}${e.weight ? ` ・ ${h(e.weight)}${weightLbNote(e.weight, u)}` : ''}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets, u))}` : '前回の記録なし'}</span></div>
       ${hint ? `<div class="hint small">${h(hint)}</div>` : ''}
       <table class="sets"><tr><th>セット</th><th>重さ ${u}</th><th>回数</th><th></th></tr>
@@ -2010,6 +2243,32 @@ const ACT = {
     const r = await runAI('AIが計算中…', sig => gemini(mealTextPrompt(text), [], sig), 'text');
     if (!r) return;
     mealSheet(newMeal(normalizeMeal(r)), true);
+  },
+  eventNew: () => eventSheet(),
+  async eventSave() {
+    const date = $('#ev-date').value;
+    if (!date) { alert('日付を選んでください'); return; }
+    const shop = SHOPS.find(x => x[0] === $('#ev-shop').value)[1];
+    S.events = [...(S.events || []), { id: uid(), date, label: $('#ev-label').value.trim() || `${shop}（お酒${$('#ev-drinks').value}杯）`, kcal: eventKcalCalc() }];
+    await save('events');
+    closeSheet();
+    render();
+    toast('予定を入れました。前後の日の目標カロリーを調整します');
+  },
+  async eventDelete(el) {
+    if (!confirm('この予定を削除しますか？')) return;
+    S.events = S.events.filter(e => e.id !== el.dataset.id);
+    await save('events');
+    render();
+  },
+  async foodAnalyzeAI() {
+    const r = await runAI('AIが食事のバランスを分析中…', sig => gemini(foodAnalyzePrompt(), [], sig), 'plan');
+    if (!r) return;
+    openSheet('1週間・1か月の食事の分析', `
+      ${r.summary ? `<div class="hint small">💬 ${h(r.summary)}</div>` : ''}
+      ${r.patterns?.length ? `<h4>見つかった傾向</h4><ul class="plain small">${r.patterns.map(x => `<li>${h(x)}</li>`).join('')}</ul>` : ''}
+      ${r.advice?.length ? `<h4>アドバイス</h4><ul class="plain small">${r.advice.map(x => `<li>${h(x)}</li>`).join('')}</ul>` : ''}
+      ${r.nextWeek ? `<h4>これからの1週間</h4><p class="small">${h(r.nextWeek)}</p>` : ''}`);
   },
   async mealUsualBreakfast() {
     recalcMeal(draft);
@@ -2335,10 +2594,30 @@ const ACT = {
       cardio: r.cardio && num(r.cardio.min) ? { type: String(r.cardio.type || '有酸素運動'), min: num(r.cardio.min), note: r.cardio.note || '' } : null,
       exercises: r.exercises.map(e => ({ name: String(e.name), sets: num(e.sets) || 3, reps: String(e.reps ?? ''), rest: e.rest || '', weight: e.weight || '', alt: e.alt ? String(e.alt) : '', note: e.note || '', adj: true })),
     };
-    S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay };
+    S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay, place: 'gym' };
     await save('today');
     render();
     toast('今日のメニューを調整しました');
+  },
+  habitNew: el => habitSheet(CATALOG.find(c => c.id === el.dataset.id)),
+  habitAddSet: () => { draft.sets.push({ r: null }); renderHabitSets(); },
+  habitDelSet: el => { draft.sets.splice(+el.dataset.i, 1); renderHabitSets(); },
+  async habitSave() {
+    const sets = draft.sets.filter(x => num(x.r) > 0);
+    if (!sets.length) { alert('回数を入れてください'); return; }
+    S.habits = [...(S.habits || []).filter(x => x.id !== draft.id), { id: draft.id, date: ymd(), name: draft.name, sets, created: Date.now() }];
+    await save('habits');
+    const streak = habitStreak(draft.name);
+    closeSheet();
+    render();
+    toast(streak >= 2 ? `記録しました！${streak}日連続です 🔥` : '記録しました！');
+  },
+  async todayPlace(el) {
+    const t = todayInput();
+    S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay: null, place: el.dataset.v };
+    await save('today');
+    const y = window.scrollY; render(); window.scrollTo(0, y);
+    toast(el.dataset.v === 'home' ? '今日は宅トレのメニューにしました' : 'ジムのメニューに戻しました');
   },
   async todayReset() {
     S.today = null;
@@ -2517,10 +2796,19 @@ const ACT = {
   pickPart(el) {
     $$(`input[data-part="${el.dataset.part}"]:not(:disabled)`).forEach(i => { i.checked = el.dataset.on === '1'; });
   },
+  pinToggle(el) {
+    const id = el.dataset.id;
+    if (draft.pins.has(id)) draft.pins.delete(id); else draft.pins.add(id);
+    el.classList.toggle('on', draft.pins.has(id));
+    const box = $(`input[data-pick="${id}"]`);
+    if (draft.pins.has(id) && box) box.checked = true;
+  },
   async pickSave() {
     const ids = $$('input[data-pick]:checked').map(i => i.dataset.pick);
     if (!ids.length) { alert('種目を1つ以上選んでください'); return; }
-    S.settings.chosen = ids;
+    // 📌を付けた種目は、選んだ種目にも入れる
+    S.settings.pinned = [...draft.pins];
+    S.settings.chosen = [...new Set([...ids, ...draft.pins])];
     await save('settings');
     closeSheet();
     render();
@@ -2641,10 +2929,14 @@ const ACT = {
 };
 
 const INPUT = {
+  habitSet(el) { draft.sets[+el.dataset.i].r = num(el.value); },
+  eventCalc() {
+    $('#ev-kcal').innerHTML = `この会食はおよそ <b>${eventKcalCalc()}kcal</b>（料理＋お酒1杯150kcalで計算）`;
+  },
   async todayAdj(el) {
     const t = todayInput();
     t[el.dataset.k] = el.dataset.k === 'minutes' ? num(el.value) : el.value;
-    S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay: null };
+    S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay: null, place: t.place };
     await save('today');
     const y = window.scrollY;
     render();
@@ -2696,7 +2988,7 @@ async function onSettingChange(el) {
     st.equipment = el.checked ? [...new Set([...st.equipment, k])] : st.equipment.filter(x => x !== k);
   } else {
     const path = el.dataset.set.split('.');
-    let v = el.value;
+    let v = el.type === 'checkbox' ? el.checked : el.value;
     if (path[0] === 'goals') v = v.split('\n').map(s => s.trim()).filter(Boolean);
     if (['daysPerWeek', 'weightMin', 'cardioMin'].includes(path[0]) || path[1] === 'activity') v = num(v);
     if (path[0] === 'targetMonths') { v = num(v); st.targetBase = ymd(); }
