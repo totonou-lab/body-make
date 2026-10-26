@@ -1353,22 +1353,26 @@ const VIEWS = {
       <b>${mealDate === ymd() ? '今日 ' : ''}${jpDate(mealDate)}</b>
       <button class="btn sm" data-act="mealDay" data-d="1" ${mealDate >= ymd() ? 'disabled' : ''}>次の日 ›</button>
     </div>`;
+    // 記録ボタンはいつも一番上に
+    html += `<div class="card record-box"><h3>✍️ 食事を記録する</h3>
+      <div class="btn-grid" style="margin-bottom:8px">
+        <button class="btn primary" data-act="mealPhoto">📷 写真で記録</button>
+        <button class="btn" data-act="mealText">✏️ 文字で記録</button>
+        <button class="btn" data-act="mealFav">⭐ お気に入りから</button>
+        <button class="btn" data-act="mealManual">＋ 手で入力</button>
+      </div>
+      <button class="btn block" data-act="shareNew">🍻 みんなで食べた（会食・分け合い）</button>
+      ${mealDate === ymd() ? usualBreakfastBtn() : ''}
+    </div>`;
     html += `<div class="card">
       ${bar('カロリー', tot.kcal, t?.kcal, 'kcal')}
       ${bar('たんぱく質', tot.protein, t?.protein, 'g')}
       ${bar('脂質', tot.fat, t?.fat, 'g')}
       ${bar('炭水化物', tot.carbs, t?.carbs, 'g')}
       ${t?.extra ? `<p class="muted">🚲🏃 この日の${[t.ride ? `自転車 ${t.ride}kcal` : '', t.cardio ? `有酸素 ${t.cardio}kcal` : ''].filter(Boolean).join('・')} 分を目標に足しています</p>` : ''}
-      ${mealDate === ymd() ? usualBreakfastBtn() + nextMealHtml(false) : ''}
+      ${mealDate === ymd() ? nextMealHtml(false) : ''}
     </div>`;
     if (mealDate === ymd()) html += weekBalanceHtml(false);
-    html += `<div class="btn-grid">
-      <button class="btn primary" data-act="mealPhoto">📷 写真で記録</button>
-      <button class="btn" data-act="mealText">✏️ 文字で記録</button>
-      <button class="btn" data-act="mealFav">⭐ お気に入りから</button>
-      <button class="btn" data-act="mealManual">＋ 手で入力</button>
-    </div>
-    <button class="btn block" data-act="shareNew" style="margin:-4px 0 12px">🍻 みんなで食べた（会食・分け合い）</button>`;
     for (const [type, label] of MEAL_TYPES) {
       const list = ms.filter(m => m.type === type);
       if (!list.length) continue;
