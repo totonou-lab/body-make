@@ -3071,5 +3071,10 @@ document.addEventListener('change', e => {
   try { await navigator.storage?.persist?.(); } catch {}
   await loadAll();
   render();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    // 新しい版に切り替わったら、自動で開き直す（初回は除く）
+    const had = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) location.reload(); });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  }
 })();

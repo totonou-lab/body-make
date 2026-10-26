@@ -1,9 +1,10 @@
 // アプリを更新したら CACHE の数字を上げる
-const CACHE = 'bodymake-v32';
+const CACHE = 'bodymake-v33';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
+// cache: 'reload' … ブラウザに残った古いファイルではなく、必ず最新を取りに行く
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
