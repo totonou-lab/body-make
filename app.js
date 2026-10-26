@@ -1000,12 +1000,27 @@ function adjustDay(day) {
   const est = WARMUP_MIN + exercises.reduce((a, e) => a + (isAbsEx(e) ? ABS_MIN : EX_MIN), 0);
   return { ...day, exercises, estMin: est + (day.cardio ? day.cardio.min : 0), todayLabel: `${t.minutes}分・${condLabel}` };
 }
+function placeSegHtml() {
+  const t = todayInput();
+  return `<div class="spread" style="margin-top:8px"><span class="small">📍 今日の場所</span>
+      <div class="seg">${[['gym', '🏋️ ジム'], ['home', '🏠 宅トレ']].map(([v, l]) => `<button class="${t.place === v ? 'on' : ''}" data-act="todayPlace" data-v="${v}">${l}</button>`).join('')}</div></div>
+    ${t.place === 'home' ? '<p class="muted" style="margin:4px 0 0">雨の日や忙しい日は、家で同じ部位を自重で鍛えましょう。</p>' : ''}`;
+}
+// いつでも一番上に出す記録ボタン（ジム／宅トレ／有酸素）
+function recordBoxHtml() {
+  const d = nextPlanDay();
+  return `<div class="card record-box"><h3>✍️ トレーニングを記録する</h3>
+    <div class="grid2">
+      <button class="btn primary" data-act="recordStart" data-v="gym">🏋️ ジムで記録</button>
+      <button class="btn primary" data-act="recordStart" data-v="home">🏠 宅トレで記録</button>
+    </div>
+    <button class="btn block" data-act="startCardio" style="margin-top:8px">🏃 有酸素運動を記録</button>
+    <p class="muted" style="margin:6px 0 0">${menuLabel(d)}「${h(dayTitle(d))}」の種目が入った状態で始まります。</p></div>`;
+}
 function todayAdjustHtml() {
   const t = todayInput();
   return `<div class="today-adj">
-    <div class="spread" style="margin-top:8px"><span class="small">📍 今日の場所</span>
-      <div class="seg">${[['gym', '🏋️ ジム'], ['home', '🏠 宅トレ']].map(([v, l]) => `<button class="${t.place === v ? 'on' : ''}" data-act="todayPlace" data-v="${v}">${l}</button>`).join('')}</div></div>
-    ${t.place === 'home' ? '<p class="muted" style="margin:4px 0 0">雨の日や忙しい日は、家で同じ部位を自重で鍛えましょう。</p>' : ''}
+    ${placeSegHtml()}
     <div class="grid2">
       <label class="field">⏱ 今日の時間<select data-in="todayAdj" data-k="minutes">${TODAY_MINUTES.map(m => `<option value="${m}" ${m === t.minutes ? 'selected' : ''}>${m}分${m === (num(S.settings.weightMin) || 60) ? '（いつも）' : ''}</option>`).join('')}</select></label>
       <label class="field">😊 今日の調子<select data-in="todayAdj" data-k="cond">${CONDITIONS.map(([v, l]) => `<option value="${v}" ${v === t.cond ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -1408,25 +1423,26 @@ const VIEWS = {
     const plan = currentPlan();
     const ws = sortedWorkouts().reverse();
     const ts = trainStatus();
-    let html = '';
+    const home = todayInput().place === 'home';
+    let html = recordBoxHtml();
     // 今日のメニュー
     if (ts.state === 'go') {
       html += `<div class="card day-card"><h3>💪 今日のメニュー</h3>${todayAdjustHtml()}${dayCardHtml(adjustDay(ts.today), { primary: true, today: true, buttonText: 'このメニューで記録を始める' })}</div>`;
     } else if (ts.state === 'done') {
       html += `<div class="card rest-card"><h3>✅ 今日のメニュー：トレーニング済み</h3>
         <p class="small">今日は「${h(ts.todayW.dayName)}」をやりました。おつかれさまでした！<br>今日は<b>体を休ませて、超回復を待ちましょう</b>。${SUPER}</p>
-        <ul class="plain small"><li>たんぱく質をしっかり（今日の目標までとりましょう）</li><li>睡眠は7時間くらいとると回復が早くなります</li></ul></div>`;
+        <ul class="plain small"><li>たんぱく質をしっかり（今日の目標までとりましょう）</li><li>睡眠は7時間くらいとると回復が早くなります</li></ul>
+        ${placeSegHtml()}${home ? dayCardHtml(adjustDay(ts.next), { primary: true, today: true, buttonText: '宅トレで記録を始める' }) : ''}</div>`;
     } else {
       html += `<div class="card rest-card"><h3>🛌 今日のメニュー：休養日</h3>
         <p class="small">前回（${jpDate(ts.last.date)}「${h(ts.last.dayName)}」）で使った筋肉を休ませて、<b>超回復を待ちましょう</b>。${SUPER}</p>
         <p class="small">次は <b>${jpDate(ts.nextAt.date)}</b> がおすすめです。</p>
-        <button class="btn sm" data-act="startWorkout">それでも今日やる（${menuLabel(ts.next)}）</button></div>`;
+        ${placeSegHtml()}${home ? dayCardHtml(adjustDay(ts.next), { primary: true, today: true, buttonText: '宅トレで記録を始める' }) : ''}</div>`;
     }
     // 次回のメニュー
     html += `<div class="card day-card"><div class="spread"><h3>📅 次回のメニュー</h3></div>
       <p class="small" style="margin-top:0"><b>${jpDate(ts.nextAt.date)}</b> に行くのがおすすめ${ts.nextAt.why ? `<span class="muted">（${h(ts.nextAt.why)}から計算）</span>` : ''}</p>
       ${dayCardHtml(ts.next, { compact: ts.state === 'go', button: ts.state !== 'go' })}</div>`;
-    html += `<button class="btn block" data-act="startCardio" style="margin-bottom:12px">🏃 有酸素運動だけ記録する</button>`;
     // すべてのメニュー
     html += `<div class="card"><details><summary>すべてのメニューを見る（${plan.days.length}種類を順番に回します）</summary>
       <p class="muted">メニューA→B→C…の順にくり返します。曜日は決めず、行った日に「今日のメニュー」をやればOK。休んだ日があっても続きから始まります。</p>
@@ -2580,6 +2596,15 @@ const ACT = {
     if (confirm(`${n}回分を取り込みました。\nこの記録をもとに、AIで重さ入りのメニューを作りますか？`)) ACT.planAI();
   },
   startWorkout: () => workoutSheet(workoutFromPlanDay(adjustDay(nextPlanDay())), true),
+  async recordStart(el) {
+    const t = todayInput();
+    if (t.place !== el.dataset.v) {
+      S.today = { date: ymd(), minutes: t.minutes, cond: t.cond, memo: t.memo, aiDay: null, place: el.dataset.v };
+      await save('today');
+      render();
+    }
+    ACT.startWorkout();
+  },
   startDay(el) {
     const day = currentPlan().days[+el.dataset.i];
     workoutSheet(workoutFromPlanDay(el.dataset.today ? adjustDay(day) : day), true);

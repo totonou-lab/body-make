@@ -1,5 +1,5 @@
 // アプリを更新したら CACHE の数字を上げる
-const CACHE = 'bodymake-v30';
+const CACHE = 'bodymake-v31';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
