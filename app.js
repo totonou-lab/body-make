@@ -739,7 +739,7 @@ function foodItem(sel) {
 function foodSheet() {
   draft = { sel: [], res: [] };
   openSheet('✏️ 文字で記録', `
-    <input id="fs-q" type="search" data-in="foodSearch" placeholder="料理名・食材名（例：からあげ、鶏むね）" autocomplete="off">
+    <div class="fs-top"><input id="fs-q" type="search" data-in="foodSearch" placeholder="料理名・食材名（例：からあげ、鶏むね）" autocomplete="off"></div>
     <div id="fs-res" class="fs-res"><p class="muted">打つとすぐ候補が出ます。AIは使わないので待ち時間はありません。</p></div>
     <div id="fs-sel"></div>
     <button class="btn block" data-act="foodAI" style="margin-top:10px">🤖 見つからないときはAIに聞く</button>
@@ -3255,6 +3255,17 @@ document.addEventListener('input', e => {
   if (el && el.tagName !== 'SELECT' && INPUT[el.dataset.in]) INPUT[el.dataset.in](el, e);
 });
 // ショートカットから戻ってきたら、取り込みボタンを大きく出す（コピー内容を読むにはタップが必要なため）
+// キーボードが出たら、下から出る画面をキーボードの上の見えている部分に収める（上が切れないように）
+if (window.visualViewport) {
+  const fit = () => {
+    const v = visualViewport, r = document.documentElement.style;
+    r.setProperty('--vvh', `${v.height}px`);
+    r.setProperty('--vvt', `${v.offsetTop}px`);
+  };
+  visualViewport.addEventListener('resize', fit);
+  visualViewport.addEventListener('scroll', fit);
+  fit();
+}
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   let t = 0;

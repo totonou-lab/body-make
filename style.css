@@ -175,11 +175,11 @@ input[type=checkbox] { width: 22px; height: 22px; min-height: 0; flex: none; acc
 ul.plain { margin: 4px 0; padding-left: 20px; }
 ul.plain li { margin: 3px 0; }
 
-.sheet { position: fixed; inset: 0; height: 100vh; height: 100dvh; z-index: 20; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
+.sheet { position: fixed; inset: 0; height: 100vh; height: 100dvh; top: var(--vvt, 0); height: var(--vvh, 100dvh); z-index: 20; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
 .sheet[hidden] { display: none; }
 .sheet-panel {
   background: var(--card); width: 100%; max-width: 640px;
-  max-height: calc(100vh - 80px); max-height: calc(100dvh - 24px); overflow-y: auto; -webkit-overflow-scrolling: touch;
+  max-height: calc(100vh - 80px); max-height: calc(100dvh - 24px); max-height: calc(var(--vvh, 100dvh) - 24px); overflow-y: auto; -webkit-overflow-scrolling: touch;
   border-radius: 18px 18px 0 0;
   padding: 0 16px calc(20px + env(safe-area-inset-bottom));
 }
@@ -304,3 +304,6 @@ details summary { cursor: pointer; color: var(--accent); font-weight: 600; paddi
 .qty-in { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
 .qty-in input { width: 76px; text-align: center; }
 .btn-grid .btn { min-width: 0; white-space: normal; }
+
+/* 入力欄は見出しのすぐ下に固定（下に動かしても隠れない） */
+.fs-top { position: sticky; top: 52px; z-index: 1; background: var(--card); padding: 4px 0 8px; }
