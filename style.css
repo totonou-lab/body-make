@@ -285,3 +285,22 @@ details summary { cursor: pointer; color: var(--accent); font-weight: 600; paddi
   transition: .25s; max-width: calc(100% - 32px);
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* メニューから記録へ */
+.rec-btn { flex: none; }
+.rec-chip { display: inline-block; margin-left: 6px; font: inherit; font-size: 11px; font-weight: 600; color: var(--sub); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; vertical-align: 2px; white-space: nowrap; }
+/* 記録画面：種目ごとの保存と、下に固定の保存ボタン */
+.ex-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.ex.saved .sets input { background: var(--accent-soft); }
+.sheet-foot { position: sticky; bottom: calc(-20px - env(safe-area-inset-bottom)); z-index: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 14px -16px 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); }
+#w-list > .ex { scroll-margin-top: 64px; }
+/* 文字で記録（食べ物の辞書） */
+#fs-q { font-size: 16px; }
+.fs-res .list li { padding: 8px 0; }
+.fs-res .add { font-size: 22px; font-weight: 700; color: var(--accent); padding: 0 6px; }
+.fs-item { border-top: 1px solid var(--line); padding: 8px 0; }
+.fs-qty { gap: 6px; margin: 6px 0 4px; align-items: center; }
+.fs-qty .btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.qty-in { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
+.qty-in input { width: 76px; text-align: center; }
+.btn-grid .btn { min-width: 0; white-space: normal; }

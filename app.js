@@ -77,7 +77,7 @@ const DEFAULT_SETTINGS = {
 };
 
 // ===================== 保存（iPhoneの中のデータベース） =====================
-const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [], rides: [], today: null, events: [], habits: [] };
+const S = { settings: null, body: [], meals: [], favorites: [], plan: null, workouts: [], analyses: [], rides: [], today: null, events: [], habits: [], myFoods: [] };
 let dbPromise;
 
 function db() {
@@ -181,9 +181,11 @@ function toast(msg) {
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
 }
-function openSheet(title, html) {
+// 下の閉じるボタン：保存ボタンがある画面だけ「保存しない」と書く
+function openSheet(title, html, closeLabel) {
+  closeLabel ||= /data-act="\w*(Save|Done|Run|Import|Accept)\b/.test(html) ? '閉じる（保存しない）' : '閉じる';
   $('#sheet-title').textContent = title;
-  $('#sheet-body').innerHTML = html + '<button class="btn block" data-act="closeSheet" style="margin-top:10px">閉じる（保存しない）</button>';
+  $('#sheet-body').innerHTML = html + `<button class="btn block" data-act="closeSheet" style="margin-top:10px">${closeLabel}</button>`;
   $('#sheet').hidden = false;
   $('.sheet-panel').scrollTop = 0;
   document.body.classList.add('noscroll');
@@ -659,6 +661,117 @@ function mealTextPrompt(text) {
 次の形のJSONだけを返してください（数値は数字のみ）:
 ${MEAL_JSON}`;
 }
+// ===================== 食べ物の辞書（AIを使わずに探す） =====================
+// 辞書（foods.js）は「文字で記録」を初めて開いたときに読み込む
+let foodsReady;
+function loadFoods() {
+  return (foodsReady ||= new Promise((ok, ng) => {
+    const sc = document.createElement('script');
+    sc.src = 'foods.js';
+    sc.onload = () => ok(window.FOOD_DB);
+    sc.onerror = () => { foodsReady = null; ng(new Error('辞書を読み込めませんでした')); };
+    document.head.appendChild(sc);
+  }));
+}
+// ふだんの言い方 → 成分表の言い方
+const FOOD_ALIAS = [
+  ['鶏肉', 'にわとり'], ['鶏', 'にわとり'], ['鳥', 'にわとり'], ['とり', 'にわとり'], ['豚', 'ぶた'], ['ぽーく', 'ぶた'], ['牛', 'うし'], ['ぎゅう', 'うし'], ['びーふ', 'うし'],
+  ['胸肉', 'むね'], ['むね肉', 'むね'], ['胸', 'むね'], ['もも肉', 'もも'], ['腿', 'もも'], ['挽肉', 'ひき肉'], ['ひきにく', 'ひき肉'],
+  ['玉子', '鶏卵'], ['たまご', '鶏卵'], ['卵', '鶏卵'], ['ご飯', 'めし'], ['ごはん', 'めし'], ['白米', '精白米'], ['米', 'こめ'],
+  ['鮭', 'さけ'], ['しゃけ', 'さけ'], ['さーもん', 'さけ'], ['鯖', 'さば'], ['鮪', 'まぐろ'], ['つな', 'まぐろ 缶詰'], ['鯵', 'あじ'], ['鰤', 'ぶり'], ['海老', 'えび'], ['烏賊', 'いか'], ['蛸', 'たこ'],
+  ['人参', 'にんじん'], ['玉ねぎ', 'たまねぎ'], ['玉葱', 'たまねぎ'], ['大根', 'だいこん'], ['胡瓜', 'きゅうり'], ['茄子', 'なす'], ['南瓜', 'かぼちゃ'], ['椎茸', 'しいたけ'], ['生姜', 'しょうが'], ['葱', 'ねぎ'],
+  ['林檎', 'りんご'], ['蜜柑', 'みかん'], ['苺', 'いちご'], ['葡萄', 'ぶどう'], ['蕎麦', 'そば'], ['饂飩', 'うどん'], ['ぱすた', 'すぱげってぃ'],
+  ['牛乳', '普通牛乳'], ['豆腐', '豆腐'], ['納豆', '納豆'], ['味噌', 'みそ'], ['醤油', 'しょうゆ'], ['胡麻', 'ごま'],
+];
+// 全角→半角、カタカナ→ひらがな、記号と空白を除く
+const kana = t => String(t || '').normalize('NFKC').toLowerCase().replace(/[\u30a1-\u30f6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)).replace(/[\s・（）()「」、,]/g, '');
+const aliasTokens = q => {
+  let t = String(q || '').normalize('NFKC').toLowerCase().replace(/[\u30a1-\u30f6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+  for (const [a, b] of FOOD_ALIAS) t = t.split(a).join(` ${kana(b)} `);
+  return t.split(/[\s・、,]+/).map(kana).filter(Boolean);
+};
+let foodIndex = null;
+function buildFoodIndex(db) {
+  const mk = (kind, name, amount, unit, v, al = '') => ({ kind, name, amount, unit, kcal: v[0], protein: v[1], fat: v[2], carbs: v[3], key: kana(name + al), alKey: kana(al) });
+  foodIndex = [
+    ...db.dishes.map(x => mk('dish', x[0], x[2], 'x', x.slice(3), x[1])),
+    ...db.basics.map(x => mk('basic', x[0], x[2], 'x', x.slice(3), x[1])),
+    ...db.mext.map(x => mk('ing', x[0], '100g', 'g', x.slice(1))),
+  ];
+}
+// 自分で記録したもの（お気に入り・AIに聞いて覚えたもの）も一緒に探す
+const myFoodEntries = () => [
+  ...S.favorites.map(f => ({ kind: 'fav', name: f.name, amount: '1回分', unit: 'x', kcal: f.kcal, protein: f.protein, fat: f.fat, carbs: f.carbs, items: f.items, key: kana(f.name) })),
+  ...(S.myFoods || []).map(f => ({ kind: 'my', name: f.name, amount: f.amount || '1人前', unit: 'x', kcal: f.kcal, protein: f.protein, fat: f.fat, carbs: f.carbs, key: kana(f.name) })),
+];
+const FOOD_KIND = { fav: '⭐ お気に入り', my: '📒 覚えた料理', dish: '🍱 料理', basic: '🥚 食材', ing: '🥬 食材（成分表）' };
+function searchFoods(q) {
+  const whole = kana(q), toks = aliasTokens(q);
+  if (!whole) return [];
+  const rank = { fav: 0, my: 0, dish: 1, basic: 1, ing: 3 };
+  const out = [];
+  for (const f of [...myFoodEntries(), ...(foodIndex || [])]) {
+    let sc;
+    if (f.key.startsWith(whole)) sc = 0;
+    else if (f.key.includes(whole)) sc = 1;
+    else if (toks.length && toks.every(t => f.key.includes(t))) sc = 2;
+    else continue;
+    out.push({ f, sc: sc + rank[f.kind] * 2 + (f.kind === 'ing' ? f.name.length / 100 : 0) });
+  }
+  const seen = new Set();
+  return out.sort((a, b) => a.sc - b.sc).map(x => x.f).filter(f => !seen.has(f.kind + f.name) && seen.add(f.kind + f.name)).slice(0, 15);
+}
+// AIに聞いた料理を覚えておき、次からはすぐ出す
+async function learnFoods(items) {
+  const list = (S.myFoods || []).filter(f => !items.some(i => kana(i.name) === kana(f.name)));
+  for (const i of items) if (i.name && i.kcal > 0) list.unshift({ name: i.name, amount: i.amount || '', kcal: i.kcal, protein: i.protein, fat: i.fat, carbs: i.carbs });
+  S.myFoods = list.slice(0, 500);
+  await save('myFoods');
+}
+// 選んだものの量: 料理は「何人前（倍）」、成分表の食材は「g」
+const foodQty = f => (f.unit === 'g' ? 100 : 1);
+function foodItem(sel) {
+  const r = sel.unit === 'g' ? sel.q / 100 : sel.q;
+  const v = k => Math.round(sel[k] * r * 10) / 10;
+  const amount = sel.unit === 'g' ? `${sel.q}g` : sel.q === 1 ? sel.amount : `${sel.amount}×${sel.q}`;
+  return { name: sel.name, amount, kcal: v('kcal'), protein: v('protein'), fat: v('fat'), carbs: v('carbs') };
+}
+function foodSheet() {
+  draft = { sel: [], res: [] };
+  openSheet('✏️ 文字で記録', `
+    <input id="fs-q" type="search" data-in="foodSearch" placeholder="料理名・食材名（例：からあげ、鶏むね）" autocomplete="off">
+    <div id="fs-res" class="fs-res"><p class="muted">打つとすぐ候補が出ます。AIは使わないので待ち時間はありません。</p></div>
+    <div id="fs-sel"></div>
+    <button class="btn block" data-act="foodAI" style="margin-top:10px">🤖 見つからないときはAIに聞く</button>
+    <p class="muted" style="margin-top:10px">食材の値：文部科学省「日本食品標準成分表2020年版（八訂）」を加工して作成。料理の値は一般的な1人前の目安です。</p>`);
+  renderFoodSel();
+  loadFoods().then(db => { if (!foodIndex) buildFoodIndex(db); if ($('#fs-q')?.value) INPUT.foodSearch($('#fs-q')); })
+    .catch(e => { $('#fs-res').innerHTML = `<p class="muted">${h(e.message)}。AIに聞いてください。</p>`; });
+  setTimeout(() => $('#fs-q')?.focus(), 50);
+}
+function renderFoodRes() {
+  const q = $('#fs-q').value.trim();
+  $('#fs-res').innerHTML = !q ? '' : draft.res.length ? `<ul class="list">${draft.res.map((f, i) => `
+    <li class="tap" data-act="foodPick" data-i="${i}"><div class="grow"><div class="title">${h(f.name)}</div>
+      <div class="muted">${FOOD_KIND[f.kind]} ・ ${h(f.amount)}あたり ${r0(f.kcal)}kcal ・ P ${r1(f.protein)} / F ${r1(f.fat)} / C ${r1(f.carbs)}</div></div><span class="add">＋</span></li>`).join('')}</ul>`
+    : `<p class="muted">「${h(q)}」は辞書にありませんでした。ひらがなや短い言葉（例：からあげ）でも探せます。見つからなければ下の「AIに聞く」へ。</p>`;
+}
+function renderFoodSel() {
+  const el = $('#fs-sel');
+  if (!draft.sel.length) { el.innerHTML = ''; return; }
+  const items = draft.sel.map(foodItem);
+  const tot = k => r0(items.reduce((a, x) => a + x[k], 0));
+  el.innerHTML = `<h4>選んだもの</h4>${draft.sel.map((x, i) => `<div class="fs-item">
+      <div class="spread"><b class="small">${h(x.name)}</b><button class="icon-btn" data-act="foodDel" data-i="${i}" aria-label="削除">✕</button></div>
+      <div class="row wrap fs-qty">
+        ${(x.unit === 'g' ? [[50, '50g'], [100, '100g'], [150, '150g'], [200, '200g']] : [[0.5, '半分'], [1, '1人前'], [1.5, '大盛り']]).map(([v, l]) => `<button class="btn sm ${x.q === v ? 'on' : ''}" data-act="foodQty" data-i="${i}" data-v="${v}">${l}</button>`).join('')}
+        <label class="qty-in"><input type="number" inputmode="decimal" step="${x.unit === 'g' ? 10 : 0.05}" min="0" data-in="foodQty" data-i="${i}" value="${x.q}">${x.unit === 'g' ? 'g' : '倍'}</label>
+      </div>
+      <div class="muted" id="fs-kcal-${i}">${h(items[i].amount)} ・ ${r0(items[i].kcal)}kcal（P ${r1(items[i].protein)} / F ${r1(items[i].fat)} / C ${r1(items[i].carbs)}）</div>
+    </div>`).join('')}
+    <div class="hint small" id="fs-total">合計 <b>${tot('kcal')}kcal</b> ・ たんぱく質 ${tot('protein')}g ・ 脂質 ${tot('fat')}g ・ 炭水化物 ${tot('carbs')}g</div>
+    <button class="btn primary block" data-act="foodDone" style="margin-top:8px">この内容で記録へ進む</button>`;
+}
 function normalizeMeal(r) {
   const items = (r.items || []).map(i => ({
     name: String(i.name || '不明'),
@@ -892,7 +1005,10 @@ function withPinned(plan, home) {
   return { ...plan, days: plan.days.map(d => (!d.exercises.length ? d : { ...d, exercises: [...d.exercises, ...pins.filter(c => !d.exercises.some(e => normName(e.name) === normName(c.name))).map(c => ex(c.name, c.sets, c.reps, c.rest, c.note))] })) };
 }
 const currentPlan = () => withPinned(S.plan || defaultPlan(S.settings.daysPerWeek));
-const sortedWorkouts = () => [...S.workouts].sort((a, b) => a.date.localeCompare(b.date) || (a.created || 0) - (b.created || 0));
+// 途中保存のまま今日が終わっていない記録（翌日になれば、ふつうの記録として数える）
+const inProgress = w => !!w.full && w.date === ymd();
+const todayDraft = () => S.workouts.find(inProgress);
+const sortedWorkouts = () => S.workouts.filter(w => !inProgress(w)).sort((a, b) => a.date.localeCompare(b.date) || (a.created || 0) - (b.created || 0));
 
 function nextPlanDay() {
   const days = currentPlan().days;
@@ -1008,7 +1124,11 @@ function placeSegHtml() {
 }
 // いつでも一番上に出す記録ボタン（ジム／宅トレ／有酸素）
 function recordBoxHtml() {
-  const d = nextPlanDay();
+  const d = nextPlanDay(), dr = todayDraft();
+  if (dr) return `<div class="card record-box"><h3>✍️ トレーニングを記録する</h3>
+    <p class="small" style="margin-top:0">⏸ 「${h(dr.dayName)}」を記録中（${dr.exercises.length}種目を保存済み）</p>
+    <button class="btn primary block" data-act="resumeDraft">▶ 続きを記録する</button>
+    <button class="btn block" data-act="startCardio" style="margin-top:8px">🏃 有酸素運動を記録</button></div>`;
   return `<div class="card record-box"><h3>✍️ トレーニングを記録する</h3>
     <div class="grid2">
       <button class="btn primary" data-act="recordStart" data-v="gym">🏋️ ジムで記録</button>
@@ -1051,14 +1171,17 @@ ${strengthText()}
 
 function dayCardHtml(d, opts = {}) {
   const i = currentPlan().days.findIndex(x => x.name === d.name);
-  return `<div class="day-head"><span class="day-no">${menuLabel(d)}</span><div class="grow"><div class="day-name">${h(dayTitle(d))}</div><div class="muted">${h(d.focus || '')}${d.estMin ? ` ・ 約${r0(d.estMin)}分` : ''}</div></div></div>
-    ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${howtoLink(e.name)}</div>
+  const rec = opts.button !== false && !opts.compact;
+  const startAttr = `data-act="startDay" data-i="${i}" ${opts.today ? 'data-today="1"' : ''}`;
+  return `<div class="day-head"><span class="day-no">${menuLabel(d)}</span><div class="grow"><div class="day-name">${h(dayTitle(d))}</div><div class="muted">${h(d.focus || '')}${d.estMin ? ` ・ 約${r0(d.estMin)}分` : ''}</div></div>
+      ${opts.button === false ? '' : `<button class="btn sm rec-btn" ${startAttr}>✍️ 記録</button>`}</div>
+    ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${howtoLink(e.name)}${rec ? `<button class="rec-chip" ${startAttr} data-ex="${h(e.name)}">✍️ 記録</button>` : ''}</div>
       <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b>${e.usual ? `<span class="muted">（いつもは${h(e.usual)}）</span>` : ''} ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
       ${e.todayNote ? `<div class="small today-note">🎯 今日は：${h(e.todayNote)}</div>` : ''}
       ${opts.compact ? '' : `${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}${effectHtml(e.name)}${e.note ? `<div class="muted">💡 ${h(e.note)}</div>` : ''}`}
       ${(alt => (alt ? `<div class="small alt">🔁 ${d.home ? 'きつければ' : '混んでいたら'}：${howtoLink(alt)}</div>` : ''))(altOf(e, d.exercises.map(x => x.name)))}</div>`).join('')}
     ${d.cardio ? `<div class="ex"><div class="ex-name">🏃 有酸素：${h(d.cardio.type)} ${r0(d.cardio.min)}分</div>${d.cardio.note && !opts.compact ? `<div class="muted">💡 ${h(d.cardio.note)}</div>` : ''}</div>` : ''}
-    ${opts.button === false ? '' : `<button class="btn ${opts.primary ? 'primary' : 'sm'} block" data-act="startDay" data-i="${i}" ${opts.today ? 'data-today="1"' : ''} style="margin-top:8px">${opts.buttonText || `${menuLabel(d)}で記録する`}</button>`}`;
+    ${opts.button === false ? '' : `<button class="btn ${opts.primary ? 'primary' : 'sm'} block" ${startAttr} style="margin-top:8px">${opts.buttonText || `${menuLabel(d)}で記録する`}</button>`}`;
 }
 // 器具が使えないときの代わり（上から順に、使える器具で、その日のメニューに無いものを選ぶ）
 const ALT = {
@@ -1409,9 +1532,8 @@ const VIEWS = {
     html += `<div class="card"><div class="spread"><h3>体の写真で分析</h3></div>
       <p class="small">体の写真から、目標に対して足りない部位と、重点的にやるトレーニングをAIが提案します。月に1回くらい、同じ場所・同じ明るさで撮ると変化がわかりやすいです。</p>
       <button class="btn primary block" data-act="bodyAnalyze">📷 体の写真を撮って分析</button>
-      ${S.analyses.length ? `<h4>これまでの分析</h4><ul class="list">${[...S.analyses].reverse().map(a => `
+      ${S.analyses.length ? `<h4>これまでの分析</h4><p class="muted" style="margin-top:0">人に見られないよう、写真は日付をタップしたときだけ表示します。</p><ul class="list">${[...S.analyses].reverse().map(a => `
         <li class="tap" data-act="analysisView" data-id="${a.id}">
-          ${a.photos?.[0] ? `<img class="thumb" src="${a.photos[0]}" alt="">` : '<div class="thumb"></div>'}
           <div class="grow"><div class="title">${jpDate(a.date)}</div><div class="muted">${h((a.result.overall || '').slice(0, 40))}…</div></div>
         </li>`).join('')}</ul>` : ''}
     </div>`;
@@ -2171,9 +2293,22 @@ function kmemoPrompt(count) {
 }
 
 // ===================== トレーニング記録のシート =====================
+function resumeDraft(exName) {
+  workoutSheet(todayDraft(), false);
+  scrollToEx(exName);
+  toast('途中の記録の続きから始めます');
+}
+function scrollToEx(name) {
+  const i = name ? draft?.exercises.findIndex(e => e.name === name) : -1;
+  if (i >= 0) $$('#w-list > .ex')[i]?.scrollIntoView({ block: 'start' });
+}
 function workoutSheet(w, isNew) {
   draft = structuredClone(w);
+  // 途中保存した記録は、まだやっていないセットも含めて元に戻す
+  if (draft.full) draft.exercises = draft.full;
+  delete draft.full;
   draft._isNew = isNew;
+  draft._open = isNew || inProgress(w);
   draft.unit ||= S.settings.unit;
   draft.cardio ||= [];
   const days = currentPlan().days;
@@ -2189,8 +2324,11 @@ function workoutSheet(w, isNew) {
     <div class="row" style="margin:8px 0 16px"><input id="w-newex" placeholder="種目を追加（例: ディップス）"><button class="btn sm" data-act="workoutAddEx">追加</button></div>
     <div class="cardio-box"><h4 style="margin-top:0">🏃 有酸素運動</h4><div id="w-cardio"></div>
       <button class="btn sm" data-act="cardioAdd">＋ 有酸素運動を追加</button></div>
-    <button class="btn primary block" data-act="workoutSave" style="margin-top:14px">保存する</button>
-    ${isNew ? '' : '<button class="btn danger block" data-act="workoutDelete" style="margin-top:8px">削除</button>'}`);
+    ${isNew ? '' : '<button class="btn danger block" data-act="workoutDelete" style="margin-top:14px">削除</button>'}
+    <div class="sheet-foot">${draft._open
+      ? '<button class="btn" data-act="workoutSaveMid">💾 途中保存</button><button class="btn primary" data-act="workoutSave">✅ 保存して終わる</button>'
+      : '<button class="btn primary" data-act="workoutSave" style="grid-column:1/-1">保存する</button>'}</div>`,
+    inProgress(w) ? '閉じる（途中保存した分は残ります）' : null);
   renderWorkoutList();
   renderCardio();
 }
@@ -2218,13 +2356,28 @@ function workoutFromPlanDay(day, date = ymd()) {
     }),
   };
 }
+// 記録を保存する。final=false は途中保存（まだのセットを full に残す）
+async function storeWorkout(final) {
+  const w = { ...draft, date: $('#w-date').value || ymd() };
+  for (const k of ['_isNew', '_open']) delete w[k];
+  const done = e => { const x = { ...e, sets: e.sets.filter(s => num(s.r) != null) }; delete x._saved; return x; };
+  w.exercises = w.exercises.map(done).filter(e => e.sets.length);
+  w.cardio = (w.cardio || []).filter(c => num(c.min) > 0);
+  if (!w.exercises.length && !w.cardio.length) { alert('記録する内容がありません。筋トレは「回数」、有酸素運動は「時間」を入れてから保存してください。'); return null; }
+  if (!final && w.date === ymd()) w.full = structuredClone(draft.exercises);
+  if (draft._isNew) { w.created = Date.now(); S.workouts.push(w); draft._isNew = false; }
+  else S.workouts = S.workouts.map(x => (x.id === w.id ? w : x));
+  await save('workouts');
+  return w;
+}
 function renderWorkoutList() {
   const u = draft.unit;
   $('#w-list').innerHTML = draft.exercises.map((e, ei) => {
     const last = lastPerf(e.name, draft.id);
     const hint = overloadHint(e, last, u);
-    return `<div class="ex">
-      <div class="spread"><div class="ex-name">${howtoLink(e.name)}</div><button class="icon-btn" data-act="workoutDelEx" data-e="${ei}" aria-label="種目を削除">✕</button></div>
+    const filled = e.sets.length && e.sets.every(s => num(s.r) != null);
+    return `<div class="ex ${e._saved ? 'saved' : ''}">
+      <div class="spread"><div class="ex-name">${e._saved ? '✅ ' : ''}${howtoLink(e.name)}</div><button class="icon-btn" data-act="workoutDelEx" data-e="${ei}" aria-label="種目を削除">✕</button></div>
       ${e.alt ? `<button class="btn sm alt-btn" data-act="workoutSwap" data-e="${ei}">🔁 ${draft.place === 'home' ? 'きつければ' : '混んでいたら'}「${h(e.alt)}」に変える</button>` : ''}
       <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}${e.weight ? ` ・ ${h(e.weight)}${weightLbNote(e.weight, u)}` : ''}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets, u))}` : '前回の記録なし'}</span></div>
       ${hint ? `<div class="hint small">${h(hint)}</div>` : ''}
@@ -2234,7 +2387,8 @@ function renderWorkoutList() {
           <td><input type="number" inputmode="numeric" data-in="wset" data-e="${ei}" data-s="${si}" data-k="r" value="${s.r ?? ''}" placeholder="${h(String(e.reps || '').split(/[-〜~]/).pop())}"></td>
           <td><button class="icon-btn" data-act="workoutDelSet" data-e="${ei}" data-s="${si}" aria-label="セットを削除">−</button></td></tr>`).join('')}
       </table>
-      <button class="btn sm" data-act="workoutAddSet" data-e="${ei}">＋ セット</button>
+      <div class="ex-foot"><button class="btn sm" data-act="workoutAddSet" data-e="${ei}">＋ セット</button>
+        ${draft._open ? `<button class="btn sm ${filled && !e._saved ? 'primary' : ''}" data-act="workoutSaveEx" data-e="${ei}">${e._saved ? '✅ 保存済み（直したら押す）' : '💾 この種目を保存'}</button>` : ''}</div>
     </div>`;
   }).join('');
 }
@@ -2255,14 +2409,39 @@ const ACT = {
     const hint = prompt('補足があれば入力（例: ご飯は半分残した / コンビニのサラダチキン）。無ければそのままOK', '') ?? '';
     const r = await runAI('AIが食事を分析中…', sig => gemini(mealPhotoPrompt(hint), [img], sig), 'meal');
     if (!r) return;
-    mealSheet(newMeal({ ...normalizeMeal(r), thumb }), true);
+    const m = normalizeMeal(r);
+    learnFoods(m.items);
+    mealSheet(newMeal({ ...m, thumb }), true);
   },
-  async mealText() {
-    const text = prompt('食べたものを入力してください\n（例: 牛丼並盛と味噌汁、ゆで卵1個）', '');
+  mealText: () => foodSheet(),
+  foodPick(el) {
+    const f = draft.res[+el.dataset.i];
+    // お気に入りは中身（品目）ごと記録へ
+    if (f.kind === 'fav') { mealSheet(newMeal({ name: f.name, items: structuredClone(f.items) }), true); return; }
+    draft.sel.push({ ...f, q: foodQty(f) });
+    $('#fs-q').value = '';
+    draft.res = [];
+    renderFoodRes();
+    renderFoodSel();
+    toast(`「${f.name}」を追加しました`);
+  },
+  foodQty(el) { draft.sel[+el.dataset.i].q = +el.dataset.v; renderFoodSel(); },
+  foodDel(el) { draft.sel.splice(+el.dataset.i, 1); renderFoodSel(); },
+  foodDone() {
+    const items = draft.sel.map(foodItem);
+    mealSheet(newMeal({ name: items.map(i => i.name.replace(/（.*?）/g, '')).join('・'), items }), true);
+  },
+  async foodAI() {
+    const q = $('#fs-q').value.trim();
+    const text = prompt('食べたものを入力してください（AIが計算します）\n（例: 牛丼並盛と味噌汁、ゆで卵1個）', q);
     if (!text?.trim()) return;
+    const keep = draft.sel.map(foodItem);
     const r = await runAI('AIが計算中…', sig => gemini(mealTextPrompt(text), [], sig), 'text');
     if (!r) return;
-    mealSheet(newMeal(normalizeMeal(r)), true);
+    const m = normalizeMeal(r);
+    await learnFoods(m.items);
+    mealSheet(newMeal({ ...m, items: [...keep, ...m.items], name: [...keep.map(i => i.name), m.name].join('・') }), true);
+    toast('次からは、この料理もすぐ探せます');
   },
   eventNew: () => eventSheet(),
   async eventSave() {
@@ -2599,7 +2778,7 @@ const ACT = {
     render();
     if (confirm(`${n}回分を取り込みました。\nこの記録をもとに、AIで重さ入りのメニューを作りますか？`)) ACT.planAI();
   },
-  startWorkout: () => workoutSheet(workoutFromPlanDay(adjustDay(nextPlanDay())), true),
+  startWorkout: () => (todayDraft() ? resumeDraft() : workoutSheet(workoutFromPlanDay(adjustDay(nextPlanDay())), true)),
   async recordStart(el) {
     const t = todayInput();
     if (t.place !== el.dataset.v) {
@@ -2610,9 +2789,12 @@ const ACT = {
     ACT.startWorkout();
   },
   startDay(el) {
+    if (todayDraft()) return resumeDraft(el.dataset.ex);
     const day = currentPlan().days[+el.dataset.i];
     workoutSheet(workoutFromPlanDay(el.dataset.today ? adjustDay(day) : day), true);
+    scrollToEx(el.dataset.ex);
   },
+  resumeDraft: () => resumeDraft(),
   async todayAI() {
     const t = { ...todayInput(), memo: $('#today-memo').value.trim() };
     const day = nextPlanDay();
@@ -2713,16 +2895,26 @@ const ACT = {
     renderWorkoutList();
     toast(`読み取りました（${updated}種目を入力・${added}種目を追加）`);
   },
+  // 途中保存：画面は閉じずに、そこまでの記録を残す
+  async workoutSaveEx(el) {
+    const e = draft.exercises[+el.dataset.e];
+    if (!e.sets.some(s => num(s.r) != null)) { alert('「回数」を入れてから保存してください'); return; }
+    e._saved = true;
+    if (!(await storeWorkout(false))) return;
+    renderWorkoutList();
+    toast(`「${e.name}」を保存しました`);
+    // 次のまだの種目へ
+    const next = draft.exercises.findIndex(x => !x._saved);
+    if (next >= 0) $$('#w-list > .ex')[next]?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  },
+  async workoutSaveMid() {
+    if (!(await storeWorkout(false))) return;
+    toast('途中まで保存しました。続きはいつでも入れられます');
+  },
   async workoutSave() {
-    const isNew = draft._isNew;
-    const w = { ...draft, date: $('#w-date').value || ymd() };
-    delete w._isNew;
-    w.exercises = w.exercises.map(e => ({ ...e, sets: e.sets.filter(s => num(s.r) != null) })).filter(e => e.sets.length);
-    w.cardio = (w.cardio || []).filter(c => num(c.min) > 0);
-    if (!w.exercises.length && !w.cardio.length) { alert('記録する内容がありません。筋トレは「回数」、有酸素運動は「時間」を入れてから保存してください。'); return; }
-    if (draft._isNew) { w.created = Date.now(); S.workouts.push(w); }
-    else S.workouts = S.workouts.map(x => (x.id === w.id ? w : x));
-    await save('workouts');
+    const isNew = draft._open;
+    const w = await storeWorkout(true);
+    if (!w) return;
     closeSheet();
     render();
     if (w.exercises.length && isNew) {
@@ -2731,6 +2923,7 @@ const ACT = {
   },
   async workoutDelete() {
     if (!confirm('このトレーニング記録を削除しますか？')) return;
+    if (draft._isNew) { closeSheet(); return; }
     S.workouts = S.workouts.filter(x => x.id !== draft.id);
     await save('workouts');
     closeSheet();
@@ -2958,6 +3151,17 @@ const ACT = {
 };
 
 const INPUT = {
+  foodSearch(el) { draft.res = searchFoods(el.value); renderFoodRes(); },
+  foodQty(el) {
+    const x = draft.sel[+el.dataset.i], v = num(el.value);
+    if (v == null || v < 0) return;
+    x.q = v;
+    // 入力中に画面を作り直すと文字が消えるので、数字の表示だけ直す
+    const it = foodItem(x), items = draft.sel.map(foodItem), tot = k => r0(items.reduce((a, y) => a + y[k], 0));
+    $(`#fs-kcal-${el.dataset.i}`).textContent = `${it.amount} ・ ${r0(it.kcal)}kcal（P ${r1(it.protein)} / F ${r1(it.fat)} / C ${r1(it.carbs)}）`;
+    $$(`[data-act=foodQty][data-i="${el.dataset.i}"]`).forEach(b => b.classList.toggle('on', +b.dataset.v === v));
+    $('#fs-total').innerHTML = `合計 <b>${tot('kcal')}kcal</b> ・ たんぱく質 ${tot('protein')}g ・ 脂質 ${tot('fat')}g ・ 炭水化物 ${tot('carbs')}g`;
+  },
   habitSet(el) { draft.sets[+el.dataset.i].r = num(el.value); },
   eventCalc() {
     $('#ev-kcal').innerHTML = `この会食はおよそ <b>${eventKcalCalc()}kcal</b>（料理＋お酒1杯150kcalで計算）`;
