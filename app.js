@@ -850,6 +850,8 @@ const CATALOG = [
     where: '腹筋の下部', effect: '下腹のぽっこりを引き締める', note: 'お尻を床から少し浮かせる' },
   { id: 'ab6', part: 'abs', group: 'abs', eq: 'cable', name: 'ケーブルウッドチョップ', sets: 3, reps: '12', rest: '60秒',
     where: '脇腹（腹斜筋）', effect: 'ウエストのくびれと脇腹のラインが出る', note: '腕ではなく体をひねって引く' },
+  { id: 'ab8', part: 'abs', group: 'abs', eq: 'machine', name: 'アブドミナルクランチ（マシン）', sets: 3, reps: '12-15', rest: '60秒', goal: 'abs',
+    where: '腹筋の上部〜中部（腹直筋）', effect: '座ったまま重りで負荷をかけられ、フォームが安定するので初心者でも腹筋のブロックを大きくしやすい', note: '腕ではなくお腹を丸めて下ろす', beginner: true },
   { id: 'ab7', part: 'abs', group: 'abs', eq: 'body', name: 'プランク', sets: 3, reps: '45秒', rest: '45秒',
     where: '体幹', effect: '体幹が安定して、お腹が内側から締まる', note: '頭からかかとまで一直線' },
   // 脚・お尻
@@ -1012,10 +1014,14 @@ const sortedWorkouts = () => S.workouts.filter(w => !inProgress(w)).sort((a, b) 
 
 function nextPlanDay() {
   const days = currentPlan().days;
-  const last = sortedWorkouts().reverse().find(w => days.some(d => d.name === w.dayName));
+  const last = strengthWorkouts().at(-1);
   if (!last) return days[0];
   const i = days.findIndex(d => d.name === last.dayName);
-  return days[(i + 1) % days.length];
+  if (i >= 0) return days[(i + 1) % days.length];
+  // メニューを作り直した直後など：前回鍛えた部位が回復するのを待たずにすむメニューを選ぶ
+  const lastParts = new Set(last.exercises.map(e => catalogFor(e.name)?.part).filter(p => p && p !== 'abs'));
+  const overlap = d => dayParts(d).filter(p => lastParts.has(p)).length;
+  return [...days].sort((a, b) => suggestDate(a).date.localeCompare(suggestDate(b).date) || overlap(a) - overlap(b) || days.indexOf(a) - days.indexOf(b))[0];
 }
 // 回復の目安: 大きい筋肉は約72時間、小さい筋肉は約48時間
 const BIG_PARTS = ['chest', 'back', 'legs'];
@@ -1169,6 +1175,14 @@ ${strengthText()}
 {"focus":"今日の狙い（1文）","estMin":45,"advice":"今日の注意点（1〜2文）","cardio":null,"exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"40kg","alt":"混んでいたときの代わり","note":"コツを短く"}]}`;
 }
 
+// 重さの目安が無い種目は、前回の記録 → 無ければ実力から推定した重さを出す
+function guessWeight(e, d) {
+  if (e.weight || d.home) return e;
+  const last = lastPerf(e.name);
+  if (last) { const w = Math.max(...last.sets.map(s => num(s.w) || 0)); return w ? { ...e, weight: `${w}kg`, usual: '' } : e; }
+  const g = estimateWeight(e.name, e.reps);
+  return g ? { ...e, weight: `${g}kg（目安）` } : e;
+}
 function dayCardHtml(d, opts = {}) {
   const i = currentPlan().days.findIndex(x => x.name === d.name);
   const rec = opts.button !== false && !opts.compact;
@@ -1176,7 +1190,7 @@ function dayCardHtml(d, opts = {}) {
   return `<div class="day-head"><span class="day-no">${menuLabel(d)}</span><div class="grow"><div class="day-name">${h(dayTitle(d))}</div><div class="muted">${h(d.focus || '')}${d.estMin ? ` ・ 約${r0(d.estMin)}分` : ''}</div></div>
       ${opts.button === false ? '' : `<button class="btn sm rec-btn" ${startAttr}>✍️ 記録</button>`}</div>
     ${d.exercises.map((e, j) => `<div class="ex"><div class="ex-name">${j + 1}. ${howtoLink(e.name)}${rec ? `<button class="rec-chip" ${startAttr} data-ex="${h(e.name)}">✍️ 記録</button>` : ''}</div>
-      <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${e.weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b>${e.usual ? `<span class="muted">（いつもは${h(e.usual)}）</span>` : ''} ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
+      <div class="small"><span class="tag">${h(e.sets)}セット × ${h(e.reps)}</span>${(e = guessWeight(e, d)).weight ? `<b>${h(e.weight)}${weightLbNote(e.weight)}</b>${e.usual ? `<span class="muted">（いつもは${h(e.usual)}）</span>` : ''} ・ ` : ''}<span class="muted">休憩 ${h(e.rest || '-')}</span></div>
       ${e.todayNote ? `<div class="small today-note">🎯 今日は：${h(e.todayNote)}</div>` : ''}
       ${opts.compact ? '' : `${e.progression ? `<div class="small">📈 ${h(e.progression)}</div>` : ''}${effectHtml(e.name)}${e.note ? `<div class="muted">💡 ${h(e.note)}</div>` : ''}`}
       ${(alt => (alt ? `<div class="small alt">🔁 ${d.home ? 'きつければ' : '混んでいたら'}：${howtoLink(alt)}</div>` : ''))(altOf(e, d.exercises.map(x => x.name)))}</div>`).join('')}
@@ -1189,7 +1203,7 @@ const ALT = {
   b1: ['b4', 'b3'], b2: ['b3', 'b1'], b3: ['b2', 'b1'], b4: ['b1', 'b3'],
   s1: ['s2'], s2: ['s3', 's1'], s3: ['s2', 's1'], s4: ['s5'], s5: ['s4'],
   a1: ['a2'], a2: ['a1'], a3: ['c8'],
-  ab1: ['ab4', 'ab5'], ab2: ['ab3', 'ab5'], ab3: ['ab5', 'ab2'], ab4: ['ab1', 'ab7'], ab5: ['ab3', 'ab2'], ab6: ['ab7'], ab7: ['ab4', 'ab6'],
+  ab1: ['ab8', 'ab4', 'ab5'], ab8: ['ab1', 'ab4'], ab2: ['ab3', 'ab5'], ab3: ['ab5', 'ab2'], ab4: ['ab1', 'ab7'], ab5: ['ab3', 'ab2'], ab6: ['ab7'], ab7: ['ab4', 'ab6'],
   l1: ['l2'], l2: ['l1'], l3: ['l4'], l4: ['l3'], l5: ['l2'],
 };
 function altFor(name, exclude = []) {
@@ -1218,6 +1232,40 @@ function overloadHint(e, last, u = 'kg') {
 }
 // 推定の最大重量（1回だけ挙げられる重さ）: 重さ×(1+回数/30)
 const e1rm = s => (num(s.w) > 0 && num(s.r) > 0 ? num(s.w) * (1 + num(s.r) / 30) : 0);
+// 種目ごとの重さの比（ベンチプレスの最大重量を1としたときの目安。ダンベルは片手分）
+const LIFT_RATIO = {
+  c9: 0.95, c3: 1, c1: 0.8, c2: 0.32, c4: 0.8, c5: 0.6, c6: 0.18, c7: 0.2,
+  b1: 0.85, b2: 0.85, b3: 0.35, s1: 0.6, s2: 0.1, s3: 0.07, s4: 0.45, s5: 0.35,
+  a1: 0.15, a2: 0.17, a3: 0.4, ab1: 0.5, ab8: 0.5, ab6: 0.2,
+  l1: 1.2, l2: 2, l3: 0.35, l4: 0.45, l5: 0.55,
+};
+// 今の実力を「ベンチプレスの最大重量」に直したもの。記録が無ければ体重から（初心者の目安）
+function benchLevel() {
+  const since = addDays(ymd(), -90), vals = [];
+  const seen = new Set();
+  for (const w of sortedWorkouts().reverse()) {
+    if (w.date < since) break;
+    for (const e of w.exercises) {
+      const c = catalogFor(e.name), k = LIFT_RATIO[c?.id];
+      if (!k || seen.has(c.id)) continue;
+      seen.add(c.id);
+      const best = Math.max(0, ...e.sets.map(e1rm));
+      if (best) vals.push(best / k);
+    }
+  }
+  if (vals.length) return { v: vals.sort((a, b) => a - b)[Math.floor(vals.length / 2)], from: 'record' };
+  const bw = num(latestBody()?.weight) || (S.settings.profile.sex === 'female' ? 52 : 65);
+  return { v: bw * (S.settings.profile.sex === 'female' ? 0.35 : 0.6), from: 'body' };
+}
+// やったことのない種目の、おすすめの重さ（kg）。自重・時間の種目は null
+function estimateWeight(name, reps) {
+  const c = catalogFor(name), k = LIFT_RATIO[c?.id];
+  if (!k) return null;
+  const top = parseInt(String(reps || c.reps || '10').split(/[-〜~]/).pop(), 10) || 10;
+  // 目標の回数を2回ほど余力を残してできる重さ
+  const w = benchLevel().v * k / (1 + (top + 2) / 30);
+  return /ダンベル/.test(c.name) ? Math.max(1, Math.round(w)) : Math.max(2.5, round25(w));
+}
 function strengthText() {
   const map = new Map();
   for (const w of sortedWorkouts()) {
@@ -2243,6 +2291,11 @@ function analysisHtml(a) {
 }
 
 // ===================== メニュー作成（AI） =====================
+function lastTrainedText() {
+  const map = lastTrainedMap();
+  const list = PARTS.filter(([k]) => map[k]).map(([k, l]) => `${l}: ${map[k]}`);
+  return list.length ? `今日は${ymd()}。部位ごとの最後に鍛えた日 → ${list.join('、')}` : 'まだ記録はありません。';
+}
 function planPrompt() {
   const st = S.settings;
   return `あなたは経験豊富なパーソナルトレーナーです。次の利用者のために、週${st.daysPerWeek}回のジムのトレーニングメニュー（${st.daysPerWeek}日分のローテーション）を作ってください。
@@ -2275,6 +2328,9 @@ ${latestAnalysisText()}
 ${strengthText()}
 【最近のトレーニング記録】
 ${recentWorkoutsText()}
+【メニューの並べ方（超回復）】
+- days の1日目は、次に行ったときに最初にやるメニューです。${lastTrainedText()}
+- 1日目には、まだ回復していない部位（大きい筋肉は72時間、小さい筋肉は48時間以内に鍛えた部位）を入れず、休めている部位のメニューにしてください。2日目以降も、続けて同じ部位を鍛えない順番にしてください。
 次の形のJSONだけを返してください:
 {"days":[{"name":"A 胸・肩・腹 のような短い名前","focus":"この日の狙い（1文）","estMin":60,"cardio":{"type":"エアロバイク など","min":20,"note":"強さやタイミング"},"exercises":[{"name":"種目名","sets":3,"reps":"8-12","rest":"90秒","weight":"今日の重さの目安（例: 40kg）","progression":"重さを上げる条件（例: 3セットとも12回できたら42.5kg）","alt":"混んでいたときの代わりの種目","note":"フォームのコツを短く"}]}],"tips":["全体のアドバイス（2〜4個）"]}`;
 }
@@ -2321,7 +2377,12 @@ function workoutSheet(w, isNew) {
       <div class="seg" id="w-unit">${['kg', 'lb'].map(u => `<button class="${draft.unit === u ? 'on' : ''}" data-act="workoutUnit" data-u="${u}">${u}</button>`).join('')}</div></div>
     <button class="btn block" data-act="workoutImage" style="margin:4px 0 8px">📷 筋トレメモの画面から入力</button>
     <div id="w-list"></div>
-    <div class="row" style="margin:8px 0 16px"><input id="w-newex" placeholder="種目を追加（例: ディップス）"><button class="btn sm" data-act="workoutAddEx">追加</button></div>
+    <label class="field" style="margin:8px 0 4px">＋ 種目を追加<select id="w-pick" data-in="workoutPick">
+      <option value="">部位から選ぶ…</option>
+      ${PARTS.map(([k, l]) => `<optgroup label="${l}">${CATALOG.filter(c => c.part === k && eqOk(c)).map(c => `<option value="${h(c.name)}">${h(c.name)}</option>`).join('')}</optgroup>`).join('')}
+      <optgroup label="自重（宅トレ）">${HOME_CATALOG.map(c => `<option value="${h(c.name)}">${h(c.name)}</option>`).join('')}</optgroup>
+      <option value="__other">✏️ リストに無い種目を書く</option></select></label>
+    <div class="row" id="w-other" style="margin:0 0 16px" hidden><input id="w-newex" placeholder="種目名（例: ディップス）"><button class="btn sm" data-act="workoutAddEx">追加</button></div>
     <div class="cardio-box"><h4 style="margin-top:0">🏃 有酸素運動</h4><div id="w-cardio"></div>
       <button class="btn sm" data-act="cardioAdd">＋ 有酸素運動を追加</button></div>
     ${isNew ? '' : '<button class="btn danger block" data-act="workoutDelete" style="margin-top:14px">削除</button>'}
@@ -2351,10 +2412,24 @@ function workoutFromPlanDay(day, date = ymd()) {
       const last = lastPerf(e.name);
       const n = num(e.sets) || 3;
       // 今日の調整で重さを変えたときは、その重さを入れる
-      const sets = Array.from({ length: n }, (_, i) => ({ w: day.home ? 0 : e.adj && firstNum(e.weight) ? firstNum(e.weight) : last ? (last.sets[i] || last.sets.at(-1)).w : firstNum(e.weight), r: null }));
-      return { name: e.name, reps: e.reps, weight: e.weight || '', target: `${n}×${e.reps}`, alt: altOf(e, day.exercises.map(x => x.name)) || '', sets };
+      const guess = !day.home && !last && !firstNum(e.weight) ? estimateWeight(e.name, e.reps) : null;
+      const sets = Array.from({ length: n }, (_, i) => ({ w: day.home ? 0 : e.adj && firstNum(e.weight) ? firstNum(e.weight) : last ? (last.sets[i] || last.sets.at(-1)).w : firstNum(e.weight) ?? guess, r: null }));
+      return { name: e.name, reps: e.reps, weight: e.weight || '', target: `${n}×${e.reps}`, alt: altOf(e, day.exercises.map(x => x.name)) || '', sets, ...(guess ? { guess } : {}) };
     }),
   };
+}
+// 記録に種目を足す。前回の記録 → 無ければおすすめの重さを入れておく
+function addExercise(name) {
+  const last = lastPerf(name), c = catalogFor(name);
+  const guess = !last && c ? estimateWeight(name, c.reps) : null;
+  const n = num(c?.sets) || 3;
+  draft.exercises.push({
+    name, reps: c?.reps || '', target: c ? `${n}×${c.reps}` : '', ...(guess ? { guess } : {}),
+    sets: last ? last.sets.map(s => ({ w: s.w, r: null })) : Array.from({ length: c ? n : 1 }, () => ({ w: c?.eq === 'body' || !c?.eq ? (c ? 0 : null) : guess, r: null })),
+  });
+  renderWorkoutList();
+  $$('#w-list > .ex').at(-1)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  toast(`「${name}」を追加しました`);
 }
 // 記録を保存する。final=false は途中保存（まだのセットを full に残す）
 async function storeWorkout(final) {
@@ -2381,10 +2456,11 @@ function renderWorkoutList() {
       ${e.alt ? `<button class="btn sm alt-btn" data-act="workoutSwap" data-e="${ei}">🔁 ${draft.place === 'home' ? 'きつければ' : '混んでいたら'}「${h(e.alt)}」に変える</button>` : ''}
       <div class="small">${e.target ? `<span class="tag">目標 ${h(e.target)}${e.weight ? ` ・ ${h(e.weight)}${weightLbNote(e.weight, u)}` : ''}</span>` : ''}<span class="muted">${last ? `前回 ${jpDate(last.date)}: ${h(setsText(last.sets, u))}` : '前回の記録なし'}</span></div>
       ${hint ? `<div class="hint small">${h(hint)}</div>` : ''}
-      <table class="sets"><tr><th>セット</th><th>重さ ${u}</th><th>回数</th><th></th></tr>
+      ${!last && e.guess ? `<div class="hint small">🔰 初めての種目です。今の実力から <b>${toUnit(e.guess, u)}${u}</b> をおすすめします（${benchLevel().from === 'record' ? 'ほかの種目の記録から推定' : '体重から推定'}）。1セット目で重さを確かめて、きつければ軽くしてください。マシンは機種で重さの感じ方が変わります。</div>` : ''}
+      <table class="sets"><tr><th>セット</th><th>重さ ${u}</th><th>回数${e.reps && !/秒/.test(e.reps) ? `<span class="muted">（目標 ${h(e.reps)}）</span>` : ''}</th><th></th></tr>
         ${e.sets.map((s, si) => `<tr><td>${si + 1}</td>
-          <td><input type="number" inputmode="decimal" data-in="wset" data-e="${ei}" data-s="${si}" data-k="w" value="${toUnit(num(s.w), u) ?? ''}"></td>
-          <td><input type="number" inputmode="numeric" data-in="wset" data-e="${ei}" data-s="${si}" data-k="r" value="${s.r ?? ''}" placeholder="${h(String(e.reps || '').split(/[-〜~]/).pop())}"></td>
+          <td><input type="text" inputmode="decimal" class="set-in" data-in="wset" data-e="${ei}" data-s="${si}" data-k="w" value="${toUnit(num(s.w), u) ?? ''}" placeholder=" "></td>
+          <td><input type="text" inputmode="numeric" class="set-in" data-in="wset" data-e="${ei}" data-s="${si}" data-k="r" value="${s.r ?? ''}" placeholder=" "></td>
           <td><button class="icon-btn" data-act="workoutDelSet" data-e="${ei}" data-s="${si}" aria-label="セットを削除">−</button></td></tr>`).join('')}
       </table>
       <div class="ex-foot"><button class="btn sm" data-act="workoutAddSet" data-e="${ei}">＋ セット</button>
@@ -2847,10 +2923,9 @@ const ACT = {
   workoutAddEx() {
     const name = $('#w-newex').value.trim();
     if (!name) return;
-    const last = lastPerf(name);
-    draft.exercises.push({ name, reps: '', target: '', sets: last ? last.sets.map(s => ({ w: s.w, r: null })) : [{ w: null, r: null }] });
+    addExercise(name);
     $('#w-newex').value = '';
-    renderWorkoutList();
+    $('#w-other').hidden = true;
   },
   workoutSwap(el) {
     const e = draft.exercises[+el.dataset.e];
@@ -3151,6 +3226,12 @@ const ACT = {
 };
 
 const INPUT = {
+  workoutPick(el) {
+    const v = el.value;
+    el.value = '';
+    if (v === '__other') { $('#w-other').hidden = false; $('#w-newex').focus(); return; }
+    if (v) addExercise(v);
+  },
   foodSearch(el) { draft.res = searchFoods(el.value); renderFoodRes(); },
   foodQty(el) {
     const x = draft.sel[+el.dataset.i], v = num(el.value);
@@ -3255,6 +3336,17 @@ document.addEventListener('input', e => {
   if (el && el.tagName !== 'SELECT' && INPUT[el.dataset.in]) INPUT[el.dataset.in](el, e);
 });
 // ショートカットから戻ってきたら、取り込みボタンを大きく出す（コピー内容を読むにはタップが必要なため）
+// 入力欄をタップしたら：入っている数字を全部選ぶ（そのまま打てば置き換わる）＋キーボードが出たあと入力欄を画面の真ん中へ
+const centerFocused = () => {
+  const el = document.activeElement;
+  if (el?.matches('input, textarea') && el.closest('.sheet-panel')) el.scrollIntoView({ block: 'center' });
+};
+document.addEventListener('focusin', e => {
+  const el = e.target;
+  if (!el.matches?.('input, textarea') || !el.closest('.sheet-panel')) return;
+  if (el.classList.contains('set-in')) setTimeout(() => el.select(), 0);
+  setTimeout(centerFocused, 350);
+});
 // キーボードが出たら、下から出る画面をキーボードの上の見えている部分に収める（上が切れないように）
 if (window.visualViewport) {
   const fit = () => {
@@ -3262,7 +3354,7 @@ if (window.visualViewport) {
     r.setProperty('--vvh', `${v.height}px`);
     r.setProperty('--vvt', `${v.offsetTop}px`);
   };
-  visualViewport.addEventListener('resize', fit);
+  visualViewport.addEventListener('resize', () => { fit(); setTimeout(centerFocused, 50); });
   visualViewport.addEventListener('scroll', fit);
   fit();
 }

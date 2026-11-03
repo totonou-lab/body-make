@@ -307,3 +307,8 @@ details summary { cursor: pointer; color: var(--accent); font-weight: 600; paddi
 
 /* 入力欄は見出しのすぐ下に固定（下に動かしても隠れない） */
 .fs-top { position: sticky; top: 52px; z-index: 1; background: var(--card); padding: 4px 0 8px; }
+/* 記録の入力欄：まだの欄は点線、入れた欄は色つき・太字でひと目でわかるように */
+.sets input.set-in { text-align: center; }
+.sets input.set-in:placeholder-shown { background: transparent; border: 1.5px dashed var(--line); }
+.sets input.set-in:not(:placeholder-shown) { background: var(--accent-soft); border: 1.5px solid var(--accent); font-weight: 700; }
+[hidden] { display: none !important; }
